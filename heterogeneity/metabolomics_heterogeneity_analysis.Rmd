@@ -1,0 +1,984 @@
+---
+title: "Metabolomics heterogeneity analyses"
+author: "Chloe Yap"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  epuRate::PCTG:
+    toc: TRUE
+    number_sections: FALSE
+    code_folding: "hide"
+knit: (function(inputFile, encoding) { 
+          rmarkdown::render(inputFile,
+                        encoding=encoding, 
+                        output_file='metabolomics_heterogeneity_analysis_rmstorage.html') })
+---
+
+# Basic info
+
+**Nomenclature**
+
+- Description: https://www.caymanchem.com/news/sphingolipid-shorthand
+- Official: https://www.qmul.ac.uk/sbcs/iupac/
+- Annotations:
+    - HMDB: https://hmdb.ca/metabolites/HMDB0011211
+    - Lipid Maps: https://www.lipidmaps.org/databases/lmsd/LMGP01030008?LMID=LMGP01030008
+
+# Set-up
+
+## Libraries
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# You need these libraries to run this template:
+library(rmarkdown)    # install.packages("rmarkdown") 
+library(epuRate)      # devtools::install_github("holtzy/epuRate", force=TRUE)
+library(tidyverse)
+library(data.table)
+library(factoextra)
+library(uwot)
+library(ggplot2)
+library(GGally)
+library(ggforce)
+library(corrplot)
+library(devtools)
+#install_github("vqv/ggbiplot")
+library(ggbiplot)
+library(caret)
+library(DT)
+library(vegan)
+library(ComplexHeatmap)
+library(colorspace)
+library(RColorBrewer)
+library(ggrepel)
+
+library(car)
+
+```
+
+## Directories
+
+```{r}
+
+lipids_dir <- "~/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Individual_lipids.csv"
+lipids_class_dir <- "~/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Total_lipids_class.csv"
+batch_dir <- "~/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Annotation_Batch.csv"
+outliers_dir <- "~/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Sample_outliers.csv"
+outliers_lipids_dir <- "~/Documents/Research/ASD/Data/5_metabolomics/analysis/outliers_lipids_batch.id"
+anno_dir <- "~/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Annotation.csv"
+pheno_aab_dir <- "~/Documents/Research/ASD/Data/Phenotype/extracted_pheno/cognitive_crossancestry_child.pheno"
+pheno_aab_qtab_dir <- "~/Documents/Research/ASD/Data/Phenotype/extracted_pheno/AAB_QTAB_aggregated.pheno"
+diet_raw_dir <- "~/Documents/Research/ASD/Data/Diet/AES_ACRC_QTAB/AES_ACRC_QTAB_diet_metabolomics.txt"
+diet_pc_dir <- "~/Documents/Research/ASD/Data/Diet/AES_ACRC_QTAB/AES_ACRC_QTAB_diet_PC_metabolomics_264_pcenergy_PC13_clr_dietonly.csv"
+##### ADD pePCs on new subset of data
+
+```
+
+## Read-in data
+
+```{r}
+
+lipids <- read.csv(lipids_dir, header = T, as.is = T)
+lipids_class <- read.csv(lipids_class_dir, header = T, as.is = T)
+batch <- read.csv(batch_dir, header = T, as.is = T)
+outliers <- read.csv(outliers_dir, header = T, as.is = T)
+outliers_lipids <- read.delim(outliers_lipids_dir, header = F, as.is = T)
+anno <- read.csv(anno_dir, header = T, as.is = T)
+anno_class.tmp <- read.csv(lipids_class_dir, header = F, as.is = T)
+pheno_aab_full <- read.delim(pheno_aab_dir, header = T, as.is = T)
+pheno_aab_qtab <- read.delim(pheno_aab_qtab_dir, header = T, as.is = T)
+diet_raw <- read.delim(diet_raw_dir, header = T, as.is = T)
+diet_pc <- read.csv(diet_pc_dir, header = T, as.is = T)
+
+```
+
+## Clean data
+
+```{r}
+
+pheno_full <- left_join(pheno_aab_qtab, pheno_aab_full)
+pheno.tmp <- left_join(lipids[,1:2], pheno_full)
+pheno <- pheno.tmp[order(match(pheno.tmp$IID, lipids$IID)),]
+pheno <- left_join(pheno, batch, by = "RunID")
+
+rm_oldpePC <- grep("diet_pe", colnames(pheno))
+pheno <- pheno[,-rm_oldpePC]
+pheno <- left_join(pheno, diet_pc, by = "IID")
+
+micro_col <- c("fibre","thiamin","riboflavin","niacinequiv","vitc","folate","vita","retinol","betacarotine","sodium","potassium","magnesium","calcium","phosphorus","iron","zinc")
+macro_col <- c("protein","fats","satfats","polyfats","monofats","cholesterol","carbohydrate","sugars")
+pe_col <- c("peprotein", "pecarbohydrate", "pefats", "pesatfats", "pepolyfats", "pemonofats", "pealcohol", "pecore", "penoncore", "peveg", "pefruit", "pemeat", "pealt", "pegrains", "pedairy", "pesweet_drink", "pepack_snack", "peconfect", "pebaked_products", "petakeaway", "pecondiments", "pefatty_meats", "pefatty_meats", "pealcohol_bev", "pemisc")
+arfs_col <- colnames(diet_raw)[grep("^arfs_", colnames(diet_raw))]
+diet_derived <- diet_raw %>% dplyr::select(IID, all_of(c(micro_col, macro_col, pe_col, arfs_col)))
+# diet_derived <- diet_raw %>% dplyr::select(IID, all_of(c(micro_col, macro_col, pe_col, arfs_col, "energy"))) # remove "energy" here as already in the pheno file
+pheno <- left_join(pheno, diet_derived, by = "IID")
+
+# Tidy up columns
+pheno$ASD <- as.factor(pheno$ASD)
+pheno$iq_dq_wisccomp_mselnv_nih <- as.numeric(pheno$iq_dq_wisccomp_mselnv_nih)
+
+identical(pheno$IID, lipids$IID)
+identical(pheno$IID, lipids_class$IID)
+
+# Add outliers column
+pheno$outliers <- as.character(ifelse(pheno$IID %in% outliers$IID, pheno$IID, NA))
+
+# Add adverse events column
+adverse_event.id <- c(2202542, 4406321, 3304969, 2202511, 4406320, 4406272, 3392391, 4406348, 1101685, 1101639, 2202554, 3304926)
+pheno$adverse_event <- ifelse(pheno$IID %in% adverse_event.id, pheno$IID, NA)
+
+# Check that there are no cotwins in the dataset
+qtabtwin <- c(258404, 258108, 258580, 258625, 258541, 258139, 258752, 258810, 258591, 258235, 258724, 258796, 258367, 258934, 258898, 258682, 258631, 258819, 258148, 258218, 258009, 258003, 258021, 25875)
+qtabcotwin <- c(258403, 258175, 258823, 258505, 258046, 258348, 258826, 258093, 258639, 258757, 258634, 258872, 258561, 258536, 258794, 258820, 258429, 258181, 258569, 258294, 258495, 258804, 25883)
+length(which(pheno$IID %in% qtabcotwin))
+
+# Check coding
+pheno$sex <- as.factor(pheno$sex)
+
+# Add age^2
+pheno$age2 <- pheno$age^2
+
+# Add periodic functions for time of sample collection
+# - based on eyeballing the lipid vs collection time graphs, it looksl ike the cosine transform generalises better across lipids
+#pheno$collection_blood_time_sin <- sin((pheno$collection_blood_time/2400)*pi)
+#plot(pheno$collection_blood_time, pheno$collection_blood_time_sin)
+pheno$collection_blood_time_cos <- sin((pheno$collection_blood_time/2400)*2*pi)
+plot(pheno$collection_blood_time, pheno$collection_blood_time_cos)
+
+# Add ifnerred clinical lipids variables
+identical(lipids$IID, lipids_class$IID)
+identical(pheno$IID, lipids_class$IID)
+pheno$cholesterol_lipidome <- lipids$COH + lipids_class$Total.CE
+pheno$triglycerides_lipidome <- lipids_class$Total.TG.SIM.
+
+# Make annotation column with matching format to headers
+anno$Lipid.species_header <- gsub("[^[:alnum:] ]", ".", anno$Lipid.species)
+anno$Lipid.species_header <- gsub(" ", ".", anno$Lipid.species_header)
+
+# Make annotation file for lipids_class
+anno_class <- data.frame(lipid = colnames(lipids_class)[3:ncol(lipids_class)], Lipid.species = as.vector(t(anno_class.tmp[1,3:ncol(anno_class.tmp)])), Lipid.species_header = colnames(lipids_class)[3:ncol(lipids_class)], Lipid.class = as.vector(t(anno_class.tmp[1,3:ncol(anno_class.tmp)])))
+anno_class[] <- lapply(anno_class, as.character)
+
+# Remove TG [NL] from classes and TG [SIM] from lipids
+rm_lipids_class <- grep(".NL.", colnames(lipids_class))
+rm_lipids <- grep(".SIM.", colnames(lipids))
+lipids_class <- lipids_class[,-rm_lipids_class]
+lipids <- lipids[,-rm_lipids]
+
+# Lipid classes
+rownames(lipids_class) <- lipids_class$IID
+lipids_class.long <- melt(lipids_class, id.vars = c("RunID", "IID"), variable.name = "lipid", value.name = "pmol_mL")
+lipids_class.long <- left_join(lipids_class.long, pheno, by = "IID")
+lipids_class.long <- left_join(lipids_class.long, anno_class, by = "lipid")
+
+# Lipids
+rownames(lipids) <- lipids$IID
+colnames(lipids) <- gsub("[^[:alnum:] ]", ".", colnames(lipids))
+lipids.long <- melt(lipids, id.vars = c("RunID", "IID"), variable.name = "lipid", value.name = "pmol_mL")
+lipids.long <- left_join(lipids.long, pheno)
+anno.tmp <- anno
+colnames(anno.tmp)[which(colnames(anno.tmp) == "Lipid.species_header")] <- "lipid"
+lipids.long <- left_join(lipids.long, anno.tmp, by = "lipid")
+
+```
+
+### Exclude participants
+
+```{r}
+
+# Keep back-ups
+lipids_class_keepSMS <- lipids_class
+lipids_keepSMS <- lipids
+pheno_keepSMS <- pheno
+lipids.long_keepSMS <- lipids.long
+
+# Exclude participant
+lipids_class <- lipids_class %>% filter(IID != 4494902)
+lipids <- lipids %>% filter(IID != 4494902)
+pheno <- pheno %>% filter(IID != 4494902)
+lipids.long <- lipids.long %>% filter(IID != 4494902)
+lipids_class.long <- lipids_class.long %>% filter(IID != 4494902)
+
+# CHOOSE to remove outliers in the OSCA script
+# Keep outliers
+lipids_class_outliers <- lipids_class
+lipids_outliers <- lipids
+pheno_outliers <- pheno
+lipids.long_outliers <- lipids.long
+lipids_class.long_outliers <- lipids_class.long
+
+# Exclude outliers
+outliers.id <- as.vector(outliers$IID)
+lipids_class <- lipids_class %>% filter(!IID %in% outliers.id)
+lipids <- lipids %>% filter(!IID %in% outliers.id)
+pheno <- pheno %>% filter(!IID %in% outliers.id)
+lipids.long <- lipids.long %>% filter(!IID %in% outliers.id)
+lipids_class.long <- lipids_class.long %>% filter(!IID %in% outliers.id)
+
+# rownames
+rownames(lipids_class) <- lipids_class$IID
+rownames(lipids) <- lipids$IID
+rownames(pheno) <- lipids$IID
+
+```
+
+### Exclude lipids
+
+```{r}
+
+# Exclude outliers
+outliers_lipids.id <- as.vector(outliers_lipids$V1)
+#lipids_class <- lipids_class %>% select(-all_of(outliers_lipids.id))
+lipids <- lipids %>% dplyr::select(-all_of(outliers_lipids.id))
+lipids.long <- lipids.long %>% filter(!lipid %in% all_of(outliers_lipids.id))
+lipids_class.long <- lipids_class.long %>% filter(!lipid %in% all_of(outliers_lipids.id))
+
+```
+
+### Calculate effective number of variables (for multiple testing correction)
+
+```{r}
+
+# Classes
+# lipids_class_int.pc <- prcomp(lipids_class_int[,c(2:ncol(lipids_class_int))], center = TRUE, scale = TRUE)
+# lipids_class_eigs <- (lipids_class_int.pc$sdev)^2
+# lipids_class_int.varpc.tmp <- lipids_class_eigs/sum(lipids_class_eigs)
+# lipids_class_int.varpc <- data.frame(var_pc = lipids_class_int.varpc.tmp, cumsum = cumsum(lipids_class_int.varpc.tmp))
+# lipids_class_int.effN <- length(which(lipids_class_int.varpc$cumsum < 0.99))
+# print(lipids_class_int.effN)
+lipids_class_int.effN <- 32
+
+# Species
+# lipids_int.pc <- prcomp(lipids_int[,c(2:ncol(lipids_int))], center = TRUE, scale = TRUE)
+# lipids_eigs <- (lipids_int.pc$sdev)^2
+# lipids_int.varpc.tmp <- lipids_eigs/sum(lipids_eigs)
+# lipids_int.varpc <- data.frame(var_pc = lipids_int.varpc.tmp, cumsum = cumsum(lipids_int.varpc.tmp))
+# lipids_int.effN <- length(which(lipids_int.varpc$cumsum < 0.99))
+# print(lipids_int.effN)
+lipids_int.effN <- 302
+
+```
+
+# Analysis-specific set-up
+
+### Exclude storage time outliers
+
+```{r}
+
+rmstorage_outliers <- "yes"
+#rmstorage_outliers <- "no"
+
+```
+
+```{r}
+
+if (rmstorage_outliers == "yes") {
+  outliers_storage.id <- pheno %>% filter(storage_blood_days >= 2500) %>% pull(IID)
+  pheno <- pheno_outliers %>% filter(storage_blood_days < 2500)
+  lipids_class <- lipids_class_outliers %>% filter(!IID %in% all_of(outliers_storage.id))
+  lipids <- lipids_outliers %>% dplyr::filter(!IID %in% all_of(outliers_storage.id))
+  lipids.long <- lipids.long_outliers %>% filter(!IID %in% all_of(outliers_storage.id))
+  lipids_class.long <- lipids_class.long_outliers %>% filter(!IID %in% all_of(outliers_storage.id))
+}
+
+```
+
+### Exclude lipids
+
+*Move to later or lose this lipids*
+
+```{r}
+
+# Exclude outliers
+outliers_lipids.id <- as.vector(outliers_lipids$V1)
+#lipids_class <- lipids_class %>% select(-all_of(outliers_lipids.id))
+lipids <- lipids %>% dplyr::select(-all_of(outliers_lipids.id))
+lipids.long <- lipids.long %>% filter(!lipid %in% all_of(outliers_lipids.id))
+lipids_class.long <- lipids_class.long %>% filter(!lipid %in% all_of(outliers_lipids.id))
+
+```
+
+### Add binarised IQ/DQ trait
+
+```{r}
+
+pheno$id_iq <- as.factor(ifelse(pheno$iq_dq_wisccomp_mselnv_nih <= 70, 1, 0))
+
+```
+
+### Inverse Normal Transform (INT)
+
+```{r}
+
+int <- function(x) {
+  qnorm((rank(x,na.last="keep")-0.5)/sum(!is.na(x)))
+}
+
+lipids_class_int <- data.frame(RunID = lipids_class$RunID, IID = lipids_class$IID, apply(lipids_class[,3:ncol(lipids_class)], 2, int))
+
+lipids_int <- data.frame(RunID = lipids$RunID, IID = lipids$IID, apply(lipids[,3:ncol(lipids)], 2, int))
+
+rownames(lipids_class_int) <- lipids_class_int$IID
+lipids_class_int.long <- melt(lipids_class_int, id.vars = c("RunID", "IID"), variable.name = "lipid", value.name = "pmol_mL")
+lipids_class_int.long <- left_join(lipids_class_int.long, pheno)
+lipids_class_int.long <- left_join(lipids_class_int.long, anno_class)
+
+rownames(lipids_int) <- lipids_int$IID
+lipids_int.long <- melt(lipids_int, id.vars = c("RunID", "IID"), variable.name = "lipid", value.name = "pmol_mL")
+lipids_int.long <- left_join(lipids_int.long, pheno)
+anno.tmp <- anno
+colnames(anno.tmp)[which(colnames(anno.tmp) == "Lipid.species_header")] <- "lipid"
+lipids_int.long <- left_join(lipids_int.long, anno.tmp)
+
+```
+
+#### Choose the desired transformation
+
+```{r}
+
+transform_choice <- "none"
+#transform_choice <- "std"
+#transform_choice <- "int"
+
+if (transform_choice == "std") {
+  
+  lipids_class <- lipids_class_std
+  lipids_class.long <- lipids_class_std.long
+  lipids <- lipids_std
+  lipids.long <- lipids_std.long
+  
+} else if (transform_choice == "int") {
+  
+  lipids_class <- lipids_class_int
+  lipids_class.long <- lipids_class_int.long
+  lipids <- lipids_int
+  lipids.long <- lipids_int.long
+  
+}
+
+```
+
+# Variance analysis
+
+https://www.bradthiessen.com/html5/stats/m301/lab2.html
+
+- probably better to use a bootstrapping method? 
+- F-test assumptions are below, and significance means that either of these aren't true:
+    - have 2 normally-distributed populations, which we definitely don't have
+    - population distributions have equal variances
+
+## No covariates
+
+### Lipid classes
+
+```{r}
+
+lipids_class_var <- lipids_class.long %>% 
+  filter(!is.na(age)) %>% filter(!is.na(sex)) %>% filter(!is.na(participant_type)) %>% 
+  group_by(lipid) %>% dplyr::summarise(Fstats = leveneTest(pmol_mL ~ ASD)$F[1], p = leveneTest(pmol_mL ~ ASD)$`Pr(>F)`[1])
+
+lipids_class_var_out <- lipids_class_var %>% arrange(p)
+anno_class.tmp <- anno_class %>% dplyr::select("lipid", "Lipid.species")
+colnames(anno_class.tmp)[which(colnames(anno_class.tmp) == "Lipid.species")] <- "Lipid.name"
+lipids_class_var_out <- left_join(lipids_class_var_out, anno_class.tmp)
+
+lipids_class_var_out$p_BH <- p.adjust(lipids_class_var_out$p)
+
+print(paste("Neff p-value threshold p=", 0.05/lipids_class_int.effN, sep = ""))
+
+datatable(lipids_class_var_out %>% mutate_if(is.numeric, ~signif(., 3)))
+
+```
+
+```{r}
+sig <- lipids_class_var %>% arrange(p) %>% filter(p < 0.05/lipids_class_int.effN) %>% pull(lipid)
+if (length(sig > 0)) {
+if (length(sig) <= 25) {
+  plot.gg <- ggplot(lipids_class.long %>% filter(lipid %in% all_of(sig)), aes(x = participant_type, y = pmol_mL, colour = participant_type)) + 
+    scale_colour_brewer(palette="Dark2") + 
+    geom_boxplot() + 
+    geom_jitter(shape = 1) + 
+    facet_wrap(~ Lipid.species, scales = "free_y") +
+    theme(legend.position = "none")
+} else if (length(sig > 25)) {
+  sig <- sig[1:25] # already ordered
+  plot.gg <- ggplot(lipids_class.long %>% filter(lipid %in% all_of(sig)), aes(x = participant_type, y = pmol_mL, colour = participant_type)) + 
+    scale_colour_brewer(palette="Dark2") + 
+    geom_boxplot() + 
+    geom_jitter(shape = 1) + 
+    facet_wrap(~ Lipid.species, scales = "free_y") +
+    theme(legend.position = "none")
+}
+plot.gg
+}
+```
+
+### Lipid species
+
+```{r}
+
+lipids_var <- lipids.long %>% 
+  filter(!is.na(age)) %>% filter(!is.na(sex)) %>% filter(!is.na(participant_type)) %>% 
+  group_by(lipid) %>% dplyr::summarise(Fstats = leveneTest(pmol_mL ~ ASD)$F[1], p = leveneTest(pmol_mL ~ ASD)$`Pr(>F)`[1])
+
+lipids_var_out <- lipids_var %>% arrange(p)
+anno.tmp <- anno %>% dplyr::select("Lipid.species", "Lipid.species_header")
+colnames(anno.tmp)[which(colnames(anno.tmp) == "Lipid.species_header")] <- "lipid"
+colnames(anno.tmp)[which(colnames(anno.tmp) == "Lipid.species")] <- "Lipid.name"
+lipids_var_out <- left_join(lipids_var_out, anno.tmp)
+
+lipids_var_out$p_BH <- p.adjust(lipids_var_out$p)
+
+print(paste("Neff p-value threshold p=", 0.05/lipids_int.effN, sep = ""))
+
+datatable(lipids_var_out %>% mutate_if(is.numeric, ~signif(., 3)))
+
+```
+
+```{r}
+sig <- lipids_var %>% arrange(p) %>% filter(p < 0.05/lipids_int.effN) %>% pull(lipid)
+if (length(sig) > 0) {
+if (length(sig) <= 25) {
+  plot.gg <- ggplot(lipids.long %>% filter(lipid %in% all_of(sig)), aes(x = participant_type, y = pmol_mL, colour = participant_type)) + 
+    scale_colour_brewer(palette="Dark2") + 
+    geom_boxplot() + 
+    geom_jitter(shape = 1) + 
+    facet_wrap(~ Lipid.species, scales = "free_y") +
+    theme(legend.position = "none")
+} else if (length(sig > 25)) {
+  sig <- sig[1:25] # already ordered
+  plot.gg <- ggplot(lipids.long %>% filter(lipid %in% all_of(sig)), aes(x = participant_type, y = pmol_mL, colour = participant_type)) + 
+    scale_colour_brewer(palette="Dark2") + 
+    geom_boxplot() + 
+    geom_jitter(shape = 1) + 
+    facet_wrap(~ Lipid.species, scales = "free_y") +
+    theme(legend.position = "none")
+}
+plot.gg
+}
+```
+
+## Regress out demographic and batch covariates
+
+```{r}
+
+# Classes
+identical(pheno$IID, lipids_class$IID)
+tmp <- apply(lipids_class[,3:ncol(lipids_class)], 2, function(x) lm(x ~ age + age2 + sex + as.factor(Batch) + InjectionOrder + storage_blood_days, data = pheno)$residuals)
+
+lipids_class_resid <- data.frame(IID = lipids_class$IID, tmp)
+
+# Species
+identical(pheno$IID, lipids$IID)
+tmp <- apply(lipids[,3:ncol(lipids)], 2, function(x) lm(x ~ age + age2 + sex + as.factor(Batch) + InjectionOrder + storage_blood_days, data = pheno)$residuals)
+
+lipids_resid <- data.frame(IID = lipids$IID, tmp)
+
+# Long format
+# Lipid classes
+rownames(lipids_class_resid) <- lipids_class_resid$IID
+lipids_class_resid.long <- melt(lipids_class_resid, id.vars = c("IID"), variable.name = "lipid", value.name = "pmol_mL")
+lipids_class_resid.long <- left_join(lipids_class_resid.long, pheno, by = "IID")
+lipids_class_resid.long <- left_join(lipids_class_resid.long, anno_class, by = "lipid")
+
+# Lipids
+rownames(lipids_resid) <- lipids_resid$IID
+colnames(lipids_resid) <- gsub("[^[:alnum:] ]", ".", colnames(lipids_resid))
+lipids_resid.long <- melt(lipids_resid, id.vars = c("IID"), variable.name = "lipid", value.name = "pmol_mL")
+lipids_resid.long <- left_join(lipids_resid.long, pheno)
+anno.tmp <- anno
+colnames(anno.tmp)[which(colnames(anno.tmp) == "Lipid.species_header")] <- "lipid"
+lipids_resid.long <- left_join(lipids_resid.long, anno.tmp, by = "lipid")
+
+```
+
+### Lipid classes
+
+#### ASD
+
+```{r}
+
+lipids_class_resid_var <- lipids_class_resid.long %>% 
+  filter(!is.na(age)) %>% filter(!is.na(sex)) %>% filter(!is.na(participant_type)) %>% 
+  group_by(lipid) %>% dplyr::summarise(Fstats = leveneTest(pmol_mL ~ ASD)$F[1], p = leveneTest(pmol_mL ~ ASD)$`Pr(>F)`[1])
+
+lipids_class_resid_var_out <- lipids_class_resid_var %>% arrange(p)
+anno_class.tmp <- anno_class %>% dplyr::select("lipid", "Lipid.species")
+colnames(anno_class.tmp)[which(colnames(anno_class.tmp) == "Lipid.species")] <- "Lipid.name"
+lipids_class_resid_var_out <- left_join(lipids_class_resid_var_out, anno_class.tmp)
+
+lipids_class_resid_var_out$p_BH <- p.adjust(lipids_class_resid_var_out$p)
+
+print(paste("Neff p-value threshold p=", 0.05/lipids_class_int.effN, sep = ""))
+
+datatable(lipids_class_resid_var_out %>% mutate_if(is.numeric, ~signif(., 3)))
+
+fwrite(lipids_class_resid_var_out, "~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/variance_analysis_asd_lipids_class_cov.txt", col.names = T, row.names = F, quote = F, sep = "\t")
+
+```
+
+```{r}
+sig <- lipids_class_resid_var %>% arrange(p) %>% filter(p < 0.05/lipids_class_int.effN) %>% pull(lipid)
+sig_asd_keep <- sig
+if (length(sig) > 0) {
+if (length(sig) <= 25) {
+  plot.gg <- ggplot(lipids_class_resid.long %>% filter(lipid %in% all_of(sig)), aes(x = participant_type, y = pmol_mL, colour = participant_type)) + 
+    scale_colour_brewer(palette="Dark2") + 
+    geom_boxplot() + 
+    geom_jitter(shape = 1) + 
+    facet_wrap(~ Lipid.species, scales = "free_y") +
+    theme_bw() +
+    theme(legend.position = "none") +
+    ylab("Concentration (residual)")
+} else if (length(sig) > 25) {
+  sig <- sig[1:25] # already ordered
+  plot.gg <- ggplot(lipids_class_resid.long %>% filter(lipid %in% all_of(sig)), aes(x = participant_type, y = pmol_mL, colour = participant_type)) + 
+    scale_colour_brewer(palette="Dark2") + 
+    geom_boxplot() + 
+    geom_jitter(shape = 1) + 
+    facet_wrap(~ Lipid.species, scales = "free_y") +
+    theme_bw() +
+    theme(legend.position = "none") +
+    ylab("Concentration (residual)")
+}
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/variance_analysis_asd_lipids_class_cov.png", plot.gg, width = 4, height = 6)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/variance_analysis_asd_lipids_class_cov.svg", plot.gg, width = 4, height = 6)
+plot.gg
+}
+```
+
+#### ID_IQ
+
+```{r}
+
+lipids_class_resid_var <- lipids_class_resid.long %>% 
+  filter(!is.na(age)) %>% filter(!is.na(sex)) %>% filter(!is.na(participant_type)) %>% 
+  group_by(lipid) %>% dplyr::summarise(Fstats = leveneTest(pmol_mL ~ id_iq)$F[1], p = leveneTest(pmol_mL ~ ASD)$`Pr(>F)`[1])
+
+lipids_class_resid_var_out <- lipids_class_resid_var %>% arrange(p)
+anno_class.tmp <- anno_class %>% dplyr::select("lipid", "Lipid.species")
+colnames(anno_class.tmp)[which(colnames(anno_class.tmp) == "Lipid.species")] <- "Lipid.name"
+lipids_class_resid_var_out <- left_join(lipids_class_resid_var_out, anno_class.tmp)
+
+lipids_class_resid_var_out$p_BH <- p.adjust(lipids_class_resid_var_out$p)
+
+print(paste("Neff p-value threshold p=", 0.05/lipids_class_int.effN, sep = ""))
+
+datatable(lipids_class_resid_var_out %>% mutate_if(is.numeric, ~signif(., 3)))
+
+fwrite(lipids_class_resid_var_out, "~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/variance_analysis_idiq_lipids_class_cov.txt", col.names = T, row.names = F, quote = F, sep = "\t")
+
+```
+
+```{r}
+sig <- lipids_class_resid_var %>% arrange(p) %>% filter(p < 0.05/lipids_class_int.effN) %>% pull(lipid)
+if (length(sig) > 0) {
+if (length(sig) <= 25) {
+  plot.gg <- ggplot(lipids_class_resid.long %>% filter(lipid %in% all_of(sig)) %>% filter(!is.na(id_iq)), aes(x = id_iq, y = pmol_mL, colour = id_iq)) + 
+    scale_colour_brewer(palette="Dark2") + 
+    geom_boxplot() + 
+    geom_jitter(shape = 1) + 
+    facet_wrap(~ Lipid.species, scales = "free_y") +
+    theme_bw()
+    theme(legend.position = "none") +
+    xlab("Intellectual disability (IQ < 70)") +
+    ylab("Concentration (residual)")
+} else if (length(sig) > 25) {
+  sig <- sig[1:25] # already ordered
+  plot.gg <- ggplot(lipids_class_resid.long %>% filter(lipid %in% all_of(sig)) %>% filter(!is.na(id_iq)), aes(x = id_iq, y = pmol_mL, colour = id_iq)) + 
+    scale_colour_brewer(palette="Dark2") + 
+    geom_boxplot() + 
+    geom_jitter(shape = 1) + 
+    facet_wrap(~ Lipid.species, scales = "free_y") +
+    theme_bw() +
+    theme(legend.position = "none") +
+    xlab("Intellectual disability (IQ < 70)") +
+    ylab("Concentration (residual)")
+}
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/variance_analysis_idiq_lipids_class_cov.png", plot.gg, width = 4, height = 6)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/variance_analysis_idiq_lipids_class_cov.svg", plot.gg, width = 4, height = 6)
+plot.gg
+}
+```
+
+### Lipid species
+
+```{r}
+
+lipids_resid_var <- lipids_resid.long %>% 
+  filter(!is.na(age)) %>% filter(!is.na(sex)) %>% filter(!is.na(participant_type)) %>% mutate(ASD = as.factor(ASD)) %>%
+  group_by(lipid) %>% dplyr::summarise(Fstats = leveneTest(pmol_mL ~ ASD)$F[1], p = leveneTest(pmol_mL ~ ASD)$`Pr(>F)`[1])
+
+lipids_resid_var_out <- lipids_resid_var %>% arrange(p)
+anno.tmp <- anno %>% dplyr::select("Lipid.species", "Lipid.species_header")
+colnames(anno.tmp)[which(colnames(anno.tmp) == "Lipid.species_header")] <- "lipid"
+colnames(anno.tmp)[which(colnames(anno.tmp) == "Lipid.species")] <- "Lipid.name"
+lipids_resid_var_out <- left_join(lipids_resid_var_out, anno.tmp)
+
+lipids_resid_var_out$p_BH <- p.adjust(lipids_resid_var_out$p)
+
+print(paste("Neff p-value threshold p=", 0.05/lipids_int.effN, sep = ""))
+
+lipids_resid_var_out$p_Neff <- ifelse(lipids_resid_var_out$p < (0.05/lipids_int.effN), "Y", "N")
+datatable(lipids_resid_var_out %>% mutate_if(is.numeric, ~signif(., 3)))
+
+fwrite(lipids_resid_var_out, "~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/variance_analysis_asd_lipids_species_cov.txt", col.names = T, row.names = F, quote = F, sep = "\t")
+
+```
+
+```{r}
+sig <- lipids_resid_var %>% arrange(p) %>% filter(p < 0.05/lipids_int.effN) %>% pull(lipid)
+sig_asd_keep <- c(sig_asd_keep, sig)
+if (length(sig) > 0) {
+if (length(sig) <= 25) {
+  plot.gg <- ggplot(lipids_resid.long %>% filter(lipid %in% all_of(sig)), aes(x = participant_type, y = pmol_mL, colour = participant_type)) + 
+    scale_colour_brewer(palette="Dark2") + 
+    geom_boxplot() + 
+    geom_jitter(shape = 1) + 
+    facet_wrap(~ Lipid.species, scales = "free_y") +
+    theme_bw() +
+    theme(legend.position = "none") +
+    ylab("Concentration (residuals)")
+} else if (length(sig) > 25) {
+  sig <- sig[1:25] # already ordered
+  plot.gg <- ggplot(lipids_resid.long %>% filter(lipid %in% all_of(sig)), aes(x = participant_type, y = pmol_mL, colour = participant_type)) + 
+    scale_colour_brewer(palette="Dark2") + 
+    geom_boxplot() + 
+    geom_jitter(shape = 1) + 
+    facet_wrap(~ Lipid.species, scales = "free_y") +
+    theme_bw() +
+    theme(legend.position = "none") +
+    ylab("Concentration (residuals)")
+}
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/variance_analysis_asd_lipids_species_cov.png", plot.gg, width = 4, height = 6)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/variance_analysis_asd_lipids_species_cov.svg", plot.gg, width = 4, height = 6)
+plot.gg
+}
+```
+
+### Put all ASD plots together
+
+```{r}
+
+print(sig_asd_keep)
+if (length(sig_asd_keep) > 0) {
+  tmp_class <- lipids_class_resid.long %>% filter(lipid %in% all_of(sig_asd_keep)) %>% dplyr::select(c("participant_type", "lipid", "pmol_mL", "Lipid.species", "sleep_cshq_total", "iq_dq_wisccomp_mselnv_nih", "storage_blood_days"))
+  tmp_class_raw <- lipids_class.long %>% filter(lipid %in% all_of(sig_asd_keep)) %>% dplyr::select(c("participant_type", "lipid", "pmol_mL", "Lipid.species", "sleep_cshq_total", "iq_dq_wisccomp_mselnv_nih", "storage_blood_days"))
+  tmp_species <- lipids_resid.long %>% filter(lipid %in% all_of(sig_asd_keep))%>% dplyr::select(c("participant_type", "lipid", "pmol_mL", "Lipid.species", "sleep_cshq_total", "iq_dq_wisccomp_mselnv_nih", "storage_blood_days"))
+  tmp_species_raw <- lipids.long %>% filter(lipid %in% all_of(sig_asd_keep))%>% dplyr::select(c("participant_type", "lipid", "pmol_mL", "Lipid.species", "sleep_cshq_total", "iq_dq_wisccomp_mselnv_nih", "storage_blood_days"))
+  sig_asd_keep.df <- rbind(tmp_class, tmp_species) %>%
+    mutate(MatchLipid = match(lipid, sig_asd_keep))
+  sig_asd_keep_raw.df <- rbind(tmp_class_raw, tmp_species_raw) %>%
+    mutate(MatchLipid = match(lipid, sig_asd_keep))
+
+#if (length(sig_asd_keep) <= 25) {
+  plot.gg <- sig_asd_keep.df %>% mutate(Lipid.species = fct_reorder(Lipid.species, MatchLipid)) %>%
+    ggplot(aes(x = participant_type, y = pmol_mL, colour = participant_type)) + 
+    scale_colour_brewer(palette="Dark2") + 
+    geom_violin(aes(colour = participant_type)) + 
+    geom_point(position = position_jitterdodge(.3),alpha=.3) +   
+    #geom_jitter(shape = 1) + 
+    facet_wrap(~ Lipid.species, scales = "free_y") +
+    theme_bw() +
+    theme(legend.position = "none", text = element_text(size = 15)) +
+    xlab("group") +
+    ylab("Concentration (residuals)")
+#} else if (length(sig_asd_keep) > 25) {
+#  sig_asd_keep <- sig_asd_keep[1:25] # already ordered
+#  plot.gg <- sig_asd_keep.df %>% mutate(Lipid.species = fct_reorder(Lipid.species, MatchLipid)) #%>%
+#    ggplot(aes(x = participant_type, y = pmol_mL, colour = participant_type)) + 
+#    scale_colour_brewer(palette="Dark2") + 
+#    geom_violin(aes(colour = participant_type)) + 
+#    geom_point(position = position_jitterdodge(.3),alpha=.3) +   
+#    #geom_jitter(shape = 1) + 
+#    facet_wrap(~ Lipid.species, scales = "free_y") +
+#    theme_bw() +
+#    theme(legend.position = "none", text = element_text(size = 15)) +
+#    xlab("group") +
+#    ylab("Concentration (pmol/mL)")
+#}
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/variance_analysis_asd_lipids_allsig_cov.png", plot.gg, width = 8, height = 4)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/variance_analysis_asd_lipids_allsig_cov.svg", plot.gg, width = 8, height = 4)
+plot.gg
+
+  plot.gg <- sig_asd_keep_raw.df %>% mutate(Lipid.species = fct_reorder(Lipid.species, MatchLipid)) %>%
+    ggplot(aes(x = participant_type, y = pmol_mL, colour = participant_type)) + 
+    scale_colour_brewer(palette="Dark2") + 
+    geom_violin(aes(colour = participant_type)) + 
+    geom_point(position = position_jitterdodge(.3),alpha=.3) +   
+    #geom_jitter(shape = 1) + 
+    facet_wrap(~ Lipid.species, scales = "free_y") +
+    theme_bw() +
+    theme(legend.position = "none", text = element_text(size = 15)) +
+    xlab("group") +
+    ylab("Concentration (pmol/mL)")
+  
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/variance_analysis_asd_lipids_allsig_cov_rawconcentration.png", plot.gg, width = 8, height = 4)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/variance_analysis_asd_lipids_allsig_cov_rawconcentration.svg", plot.gg, width = 8, height = 4)
+plot.gg
+
+  plot.gg <- sig_asd_keep.df %>% mutate(Lipid.species = fct_reorder(Lipid.species, MatchLipid)) %>%
+    ggplot(aes(x = storage_blood_days, y = pmol_mL, colour = participant_type)) + 
+    scale_colour_brewer(palette="Dark2") + 
+    geom_point(position = position_jitterdodge(.3)) +   
+    #geom_jitter(shape = 1) + 
+    facet_wrap(~ Lipid.species, scales = "free_y") +
+    theme_bw() +
+    theme(legend.position = "none", text = element_text(size = 15)) +
+    xlab("Sample storage duration (days)") +
+    ylab("Concentration (residuals)")
+
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/variance_analysis_asd_lipids_allsig_cov_storagetime.png", plot.gg, width = 8, height = 4)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/variance_analysis_asd_lipids_allsig_cov_storagetime.svg", plot.gg, width = 8, height = 4)
+plot.gg
+
+  plot.gg <- sig_asd_keep_raw.df %>% mutate(Lipid.species = fct_reorder(Lipid.species, MatchLipid)) %>%
+    ggplot(aes(x = storage_blood_days, y = pmol_mL, colour = participant_type)) + 
+    scale_colour_brewer(palette="Dark2") + 
+    geom_point(position = position_jitterdodge(.3)) +   
+    #geom_jitter(shape = 1) + 
+    facet_wrap(~ Lipid.species, scales = "free_y") +
+    theme_bw() +
+    theme(legend.position = "none", text = element_text(size = 15)) +
+    xlab("Sample storage duration (days)") +
+    ylab("Concentration (pmol/mL)")
+
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/variance_analysis_asd_lipids_allsig_cov_storagetime_rawconcentration.png", plot.gg, width = 8, height = 4)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/variance_analysis_asd_lipids_allsig_cov_storagetime_rawconcentration.svg", plot.gg, width = 8, height = 4)
+plot.gg
+
+
+}
+  
+```
+
+### Relationship between sleep problems and CE(22:6) [+OH]
+
+```{r}
+
+sig_asd_keep.df %>% filter(lipid == "CE.22.6....OH.") %>% mutate(group = participant_type) %>%
+  ggplot(aes(x = sleep_cshq_total, y = pmol_mL, colour = group)) + 
+  geom_point(alpha=0.8) +
+  theme_bw() +
+  theme(legend.position = "bottom", text = element_text(size = 15)) +
+  scale_colour_brewer(palette="Dark2") + 
+  facet_wrap(~ Lipid.species) +
+  ylab("Concentration (residuals)") +
+  xlab("CSHQ total (sleep)")
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/CE.22.6....OH._vs_sleep.png", width = 3, height = 4)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/CE.22.6....OH._vs_sleep.svg", width = 3, height = 4)
+
+sig_asd_keep.df %>% filter(lipid == "CE.22.6....OH.") %>% mutate(group = participant_type) %>%
+  ggplot(aes(x = storage_blood_days, y = pmol_mL, colour = group)) + 
+  geom_point(alpha=0.8) +
+  theme_bw() +
+  theme(legend.position = "bottom", text = element_text(size = 15)) +
+  scale_colour_brewer(palette="Dark2") + 
+  facet_wrap(~ Lipid.species) +
+  ylab("Concentraiton (residuals)") +
+  xlab("Sample storage duration (days)")
+
+```
+
+# Follow-up from Luo et al. paper: cholesterol/lipid sub-types
+
+## No covariates
+
+### Aggregate cholesterol and triglyceride information
+
+```{r}
+
+identical(lipids$IID, lipids_class$IID)
+identical(lipids$IID, pheno$IID)
+
+clinical_lipids_total <- data.frame(IID = lipids$IID, ASD = pheno$ASD, ID_IQ = pheno$id_iq, age = pheno$age, cholesterol = lipids$COH + lipids_class$Total.CE, triglycerides = lipids_class$Total.TG.SIM.) %>% arrange(desc(cholesterol))
+clinical_lipids_total$cholesterol_abnormal <- ifelse(clinical_lipids_total$cholesterol > 5.5e6, 1, 0)
+clinical_lipids_total$triglycerides_abnormal <- ifelse(clinical_lipids_total$triglycerides > 2.0e6, 1, 0)
+
+clinical_lipids_total.long <- melt(clinical_lipids_total, measure.vars = c("cholesterol", "triglycerides"), variable.name = "lipid", value.name = "pmol_mL") %>% melt(., measure.vars = c("ASD", "ID_IQ"), variable.name = "trait", value.name = "diagnosis")
+
+clinical_lipids_total.long %>% filter(!is.na(diagnosis)) %>%
+  ggplot(aes(x = diagnosis, y = pmol_mL, fill = diagnosis)) +
+    scale_fill_brewer(palette="Dark2") + 
+    geom_violin() + 
+    geom_jitter(shape =1) + 
+    facet_wrap(~ lipid, scales = "free_y") +
+    theme_bw() +
+    theme(legend.position = "none") +
+    facet_grid(lipid ~ trait, scales = "free_y")
+
+```
+
+### Test for differences
+
+```{r}
+
+leveneTest(cholesterol_abnormal ~ ASD, clinical_lipids_total)
+cholesterol_contingency_asd <- as.matrix(clinical_lipids_total %>% group_by(ASD, cholesterol_abnormal) %>% dplyr::summarise(n=n()) %>% spread(ASD, n) %>% select(-"cholesterol_abnormal"))
+fisher.test(cholesterol_contingency_asd)
+
+leveneTest(triglycerides_abnormal ~ ASD, clinical_lipids_total)
+triglycerides_contingency_asd <- as.matrix(clinical_lipids_total %>% group_by(ASD, triglycerides_abnormal) %>% dplyr::summarise(n=n()) %>% spread(ASD, n) %>% select(-"triglycerides_abnormal"))
+fisher.test(triglycerides_contingency_asd)
+
+leveneTest(cholesterol_abnormal ~ ID_IQ, clinical_lipids_total)
+cholesterol_contingency_idiq <- as.matrix(clinical_lipids_total %>% filter(!is.na(ID_IQ)) %>% group_by(ID_IQ, cholesterol_abnormal) %>% dplyr::summarise(n=n()) %>% spread(ID_IQ, n) %>% select(-"cholesterol_abnormal"))
+fisher.test(cholesterol_contingency_idiq)
+
+leveneTest(triglycerides_abnormal ~ ID_IQ, clinical_lipids_total)
+triglycerides_contingency_idiq <- as.matrix(clinical_lipids_total %>% filter(!is.na(ID_IQ)) %>% group_by(ID_IQ, triglycerides_abnormal) %>% dplyr::summarise(n=n()) %>% spread(ID_IQ, n) %>% select(-"triglycerides_abnormal"))
+fisher.test(triglycerides_contingency_idiq)
+
+```
+
+## Regress out covariates (age + sex + batch variables)
+
+### Aggregate cholesterol and triglyceride information
+
+```{r}
+
+identical(lipids_resid$IID, lipids_class_resid$IID)
+identical(lipids_resid$IID, pheno$IID)
+
+clinical_lipids_resid_total <- data.frame(IID = lipids_resid$IID, ASD = pheno$ASD, ID_IQ = pheno$id_iq, age = pheno$age, cholesterol = lipids_resid$COH + lipids_class_resid$Total.CE, triglycerides = lipids_class_resid$Total.TG.SIM.) %>% arrange(desc(cholesterol))
+clinical_lipids_resid_total$cholesterol_abnormal <- ifelse(clinical_lipids_resid_total$cholesterol > quantile(clinical_lipids_resid_total$cholesterol, probs = c(0.90)), 1, 0)
+clinical_lipids_resid_total$triglycerides_abnormal <- ifelse(clinical_lipids_resid_total$triglycerides > quantile(clinical_lipids_resid_total$triglycerides, probs = c(0.90)), 1, 0)
+
+```
+
+### Test for differences
+
+```{r}
+
+leveneTest(cholesterol_abnormal ~ ASD, clinical_lipids_resid_total)
+cholesterol_resid_contingency_asd <- as.matrix(clinical_lipids_resid_total %>% group_by(ASD, cholesterol_abnormal) %>% dplyr::summarise(n=n()) %>% spread(ASD, n) %>% select(-"cholesterol_abnormal"))
+fisher.test(cholesterol_resid_contingency_asd)
+
+leveneTest(triglycerides_abnormal ~ ASD, clinical_lipids_resid_total)
+triglycerides_resid_contingency_asd <- as.matrix(clinical_lipids_resid_total %>% group_by(ASD, triglycerides_abnormal) %>% dplyr::summarise(n=n()) %>% spread(ASD, n) %>% select(-"triglycerides_abnormal"))
+fisher.test(triglycerides_resid_contingency_asd)
+
+leveneTest(cholesterol_abnormal ~ ID_IQ, clinical_lipids_resid_total)
+cholesterol_resid_contingency_idiq <- as.matrix(clinical_lipids_resid_total %>% filter(!is.na(ID_IQ)) %>% group_by(ID_IQ, cholesterol_abnormal) %>% dplyr::summarise(n=n()) %>% spread(ID_IQ, n) %>% dplyr::select(-"cholesterol_abnormal"))
+fisher.test(cholesterol_resid_contingency_idiq)
+
+leveneTest(triglycerides_abnormal ~ ID_IQ, clinical_lipids_resid_total)
+triglycerides_resid_contingency_idiq <- as.matrix(clinical_lipids_resid_total %>% filter(!is.na(ID_IQ)) %>% group_by(ID_IQ, triglycerides_abnormal) %>% dplyr::summarise(n=n()) %>% spread(ID_IQ, n) %>% select(-"triglycerides_abnormal"))
+fisher.test(triglycerides_resid_contingency_idiq)
+
+```
+
+# Plots showing outliers
+
+```{r}
+
+tmp <- lipids_class.long_outliers %>% 
+  mutate(MatchAnno = match(Lipid.species, anno_class$Lipid.species)) %>%
+  mutate(Lipid.species = fct_reorder(Lipid.species, MatchAnno)) %>%
+  mutate(outliers_stat = ifelse(IID %in% outliers.id, "statistical", NA)) %>%
+  mutate(outliers_ae = ifelse(IID %in% adverse_event.id, "fatty", NA)) %>%
+  mutate(outliers_cnv = ifelse(cnv_any == "Y", "CNV", NA)) %>%
+  mutate(outliers_fs = ifelse(!is.na(outliers_stat) & !is.na(outliers_ae), "fatty+statistical", NA)) %>%
+  mutate(outliers_cs = ifelse(!is.na(outliers_stat) & !is.na(outliers_cnv), "CNV+statistical", NA)) %>%
+  mutate(outliers_cf = ifelse(!is.na(outliers_cnv) & !is.na(outliers_ae), "CNV+fatty", NA)) %>%
+  mutate(outlier_type = case_when(outliers_fs == "fatty+statistical" ~ "fatty+statistical",
+                                  outliers_cs == "CNV+statistical" ~ "CNV+statistical",
+                                  outliers_cf == "CNV+fatty" ~ "CNV+fatty",
+                                  outliers_stat == "statistical" ~ "statistical",
+                                  outliers_ae == "fatty" ~ "fatty",
+                                  outliers_cnv == "CNV" ~ "CNV"))
+
+tmp %>% filter(!is.na(collection_blood_time)) %>%
+  ggplot(aes(x = collection_blood_time, y = pmol_mL)) + 
+  scale_colour_brewer(palette="Dark2") + 
+  geom_point(alpha = 0.2) + 
+  geom_point(data = subset(tmp, !is.na(outlier_type)),
+             aes(x = collection_blood_time, y = pmol_mL, colour = outlier_type)) +
+  geom_smooth() + 
+  geom_vline(xintercept = c(800, 1300, 1800)) + 
+  facet_wrap(~ Lipid.species, scales = "free_y", ncol = 8) + 
+  ylab("Concentration (pmol/mL)") +
+  xlab("Collection time (24hr time)") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/outliers_lipid_class_time.png", height = 9, width = 12)
+
+tmp %>% filter(!is.na(storage_blood_days)) %>%
+  ggplot(aes(x = storage_blood_days, y = pmol_mL)) + 
+  scale_colour_brewer(palette="Dark2") + 
+  geom_point(alpha = 0.2) + 
+  geom_point(data = subset(tmp, !is.na(outlier_type)),
+             aes(x = storage_blood_days, y = pmol_mL, colour = outlier_type)) +
+  geom_smooth() + 
+  facet_wrap(~ Lipid.species, scales = "free_y", ncol = 8) + 
+  ylab("Concentration (pmol/mL)") +
+  xlab("Sample storage duration (days)") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/outliers_lipid_class_storage.png", height = 9, width = 12)
+
+tmp %>% filter(participant_type %in% c("ASD", "SIB", "UNR")) %>%
+  ggplot(aes(x = participant_type, y = pmol_mL)) + 
+  scale_colour_brewer(palette="Dark2") + 
+  geom_violin() +
+  geom_point(fill = "gray20", colour = "gray20", alpha = 0.2) +
+  #geom_point(aes(alpha = 0.6)) + 
+  geom_point(data = subset(tmp, !is.na(outlier_type)),
+             aes(x = participant_type, y = pmol_mL, colour = outlier_type), position = position_jitterdodge(.1), alpha = 0.7) +
+  facet_wrap(~ Lipid.species, scales = "free_y", ncol = 8) + 
+  ylab("Concentration (pmol/mL)") +
+  xlab("Group") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/outliers_lipid_class_group.png", height = 9, width = 12)
+
+```
+
+# Fisher's exact test for outlier enrichment
+
+- 3/12 statistical outliers that were visibly fatty
+- 7/758 statistical outliers in the total sample
+
+```{r}
+
+f <- matrix(c(3,12,7,758), nrow = 2)
+fisher.test(f)
+
+```
+
+# chr19 region plot for LDLR CNV
+
+```{r}
+
+library(Gviz)
+library(biomaRt)
+
+# Get list of genes and cytobands
+library(karyoploteR)
+library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+zoom <- toGRanges("chr19", 10609319, 12464435)
+kp <- plotKaryotype(genome="hg19", zoom=zoom)
+genes.data <- makeGenesDataFromTxDb(txdb = TxDb.Hsapiens.UCSC.hg19.knownGene, karyoplot = kp, plot.transcripts = TRUE, plot.transcripts.structure = TRUE)
+genes.data <- addGeneNames(genes.data)
+genes.data.df <- data.frame(genes.data$genes)
+colnames(genes.data.df)[1] <- "chromosome"
+genes.data.df$gene <- genes.data.df$name
+grtrack <- GeneRegionTrack(genes.data.df, genome = "hg19", transcriptAnnotation = "gene", name = "TxDb.Hsapiens.UCSC.hg19.knownGene")
+
+# Make plot
+itrack <- IdeogramTrack(genome = "hg19", chromosome = 19, background.panel = "#FFFEDB")
+gtrack <- GenomeAxisTrack(background.panel = "#FFFEDB")
+#atrack <- AnnotationTrack(pheno_sumstats.gr, name = "IQ GWAS")
+grtrack <- GeneRegionTrack(genes.data.df, genome = "hg19", transcriptAnnotation = "gene", name = "Genes (hg19)", background.panel = "#FFFEDB", background.title = "grey60")
+svg(filename="~/Documents/Research/ASD/Output/5_metabolomics/analysis/heterogeneity/chr19_LDLR_ELAVL3_locus.svg", 
+    width=9, 
+    height=3, 
+    pointsize=8)
+#plotTracks(list(itrack, gtrack, grtrack,
+#                iqtrack, pcotrack, chtrack, peptrack, asdtrack), from = 61414010, to = 61678755)
+plotTracks(list(itrack, gtrack, grtrack), from = 10609319, to = 12464435)
+dev.off()
+
+```

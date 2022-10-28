@@ -1,0 +1,173 @@
+---
+title: "Metabolomics SMR analyses"
+author: "Chloe Yap"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  epuRate::PCTG:
+    toc: TRUE
+    number_sections: FALSE
+    code_folding: "hide"
+---
+
+
+# SMR
+
+**R/4.0**
+
+```{r}
+
+# On hoffman
+# save(list = c("itrack", "gtrack", "iqtrack", "pcotrack", "sdtrack", "peptrack", "asdtrack"), file = "~/Documents/Research/ASD/Output/5_metabolomics/analysis/smr/Gviz_tracks_chr11.RData")
+# scp ~/Documents/Research/ASD/Output/5_metabolomics/analysis/smr/Gviz_tracks_chr11.RData hoffman2:~/project-gandalm/lipidomics
+library(tidyverse) # must be loaded before Gviz!
+library(dplyr)
+library(Gviz)
+library(biomaRt)
+library(GenomicRanges)
+library(data.table)
+
+source("~/Documents/Research/software/smr/plot/plot_SMR.r")
+
+load("~/project-gandalm/lipidomics/Gviz_tracks_chr11.RData")
+bm <- useMart(host = "grch37.ensembl.org", 
+              biomart = "ENSEMBL_MART_ENSEMBL", 
+              dataset = "hsapiens_gene_ensembl")
+biomTrack <- BiomartGeneRegionTrack(genome = "hg19", chromosome = 11, 
+                                    start = 61000000, end = 62000000,
+                                    name = "ENSEMBL", biomart = bm, 
+                                    transcriptAnnotation = "symbol", collapseTranscripts = "meta",
+                                    background.panel = "#FFFEDB", background.title = "grey60")
+svg(filename="~/project-gandalm/lipidomics/chr11_locus.svg", 
+    width=5, 
+    height=8, 
+    pointsize=8)
+plotTracks(list(itrack, gtrack, biomTrack,
+                iqtrack, pcotrack, sdtrack, peptrack, asdtrack), from = 61460000, to = 61678755)
+dev.off()
+
+# scp hoffman2:~/project-gandalm/lipidomics/chr11_locus.svg ~/Documents/Research/ASD/Output/5_metabolomics/analysis/smr/
+
+```
+
+### Plot effect sizes
+
+**IQ/PC.O.18.0.20.4.**
+
+```{r}
+
+SMRData <- ReadSMRData("~/Documents/Research/ASD/Output/5_metabolomics/analysis/smr/plot/IQ_PC.O.18.0.20.4._plot.PC.O.18.0.20.4..txt")
+ldclumped <- read.table("~/Documents/Research/ASD/Output/5_metabolomics/analysis/smr/PC.O.18.0.20.4._r2clump0.5.sumstats.clumped", header = T, as.is = T)
+
+gwas.tmp <- SMRData$GWAS
+eqtl.tmp <- SMRData$eQTL
+colnames(gwas.tmp) <- c("SNP", "b_trait", "se_trait")
+colnames(eqtl.tmp)[2:4] <- c("SNP", "b_lipid", "se_lipid")
+effect_check <- inner_join(gwas.tmp, eqtl.tmp, by = "SNP")
+effect_check$index <- ifelse(effect_check$SNP == "rs99780", "index", "nonindex")
+effect_check_clump <- effect_check %>% filter(SNP %in% ldclumped$SNP)
+
+# Quantify correlation
+effect_cor <- cor.test(effect_check_clump$b_trait, effect_check_clump$b_lipid)
+
+# Plot
+ggplot(effect_check_clump, aes(x = b_trait, y = b_lipid)) +
+  geom_pointrange(aes(ymin=b_lipid-se_lipid, ymax=b_lipid+se_lipid, colour = index), alpha = 0.5) +
+  geom_pointrange(aes(xmin=b_trait-se_trait, xmax=b_trait+se_trait, colour = index), alpha = 0.5) +
+  geom_pointrange(data = subset(effect_check_clump, index == "index"), aes(ymin=b_lipid-se_lipid, ymax=b_lipid+se_lipid, colour = index)) +
+  geom_pointrange(data = subset(effect_check_clump, index == "index"), aes(xmin=b_trait-se_trait, xmax=b_trait+se_trait, colour = index)) +
+  geom_smooth(method = "lm") +
+  ylab(expression(paste("SNP ", italic("b"), ": PC(O-18:0/20:4)", sep = ""))) +
+  xlab(expression(paste("SNP ", italic("b"), ": IQ", sep = ""))) +
+  scale_colour_manual(values = wes_palette("Zissou1", 4, "continuous")[c(4,1)]) +
+  geom_text(x = 0.01, y = 0.2, label = paste("r = ", signif(effect_cor$estimate, 3), sep = "")) +
+  geom_text(x = 0.01, y = 0.12, label = paste("p = ", signif(effect_cor$p.value,3), sep = "")) +
+  theme_bw() + theme(legend.position = "none")
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/smr/plot/effectsize_IQ_PC.O.18.0.20.4..svg", height = 3.5, width = 3.5)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/smr/plot/effectsize_IQ_PC.O.18.0.20.4..png", height = 3.5, width = 3.5)
+
+```
+
+**Sleep duration/PE.P.19.0.20.4...b.**
+
+```{r}
+
+SMRData <- ReadSMRData("~/Documents/Research/ASD/Output/5_metabolomics/analysis/smr/plot/SleepDuration_PE.P.19.0.20.4...b._plot.PE.P.19.0.20.4...b..txt")
+ldclumped <- read.table("~/Documents/Research/ASD/Output/5_metabolomics/analysis/smr/PE.P.19.0.20.4...b._r2clump0.5.sumstats.clumped", header = T, as.is = T)
+
+gwas.tmp <- SMRData$GWAS
+eqtl.tmp <- SMRData$eQTL
+colnames(gwas.tmp) <- c("SNP", "b_trait", "se_trait")
+colnames(eqtl.tmp)[2:4] <- c("SNP", "b_lipid", "se_lipid")
+effect_check <- inner_join(gwas.tmp, eqtl.tmp, by = "SNP")
+effect_check$index <- ifelse(effect_check$SNP == "rs102274", "index", "nonindex")
+effect_check_clump <- effect_check %>% filter(SNP %in% ldclumped$SNP)
+
+# Quantify correlation
+effect_cor <- cor.test(effect_check_clump$b_trait, effect_check_clump$b_lipid)
+
+# Plot
+ggplot(effect_check_clump, aes(x = b_trait, y = b_lipid)) +
+  geom_pointrange(aes(ymin=b_lipid-se_lipid, ymax=b_lipid+se_lipid, colour = index), alpha = 0.5) +
+  geom_pointrange(aes(xmin=b_trait-se_trait, xmax=b_trait+se_trait, colour = index), alpha = 0.5) +
+  geom_pointrange(data = subset(effect_check_clump, index == "index"), aes(ymin=b_lipid-se_lipid, ymax=b_lipid+se_lipid, colour = index)) +
+  geom_pointrange(data = subset(effect_check_clump, index == "index"), aes(xmin=b_trait-se_trait, xmax=b_trait+se_trait, colour = index)) +
+  geom_smooth(method = "lm") +
+  ylab(expression(paste("SNP ", italic("b"), ": PE(P-19:0/20:4) (b)", sep = ""))) +
+  xlab(expression(paste("SNP ", italic("b"), ": Sleep Duration", sep = ""))) +
+  scale_colour_manual(values = wes_palette("Zissou1", 4, "continuous")[c(4,1)]) +
+  geom_text(x = 0.012, y = 0.15, label = paste("r = ", signif(effect_cor$estimate, 3), sep = "")) +
+  geom_text(x = 0.012, y = 0.11, label = paste("p = ", signif(effect_cor$p.value,3), sep = "")) +
+  theme_bw() + theme(legend.position = "none")
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/smr/plot/effectsize_SleepDuration_PE.P.19.0.20.4...b..svg", height = 3.5, width = 3.5)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/smr/plot/effectsize_SleepDuration_PE.P.19.0.20.4...b..png", height = 3.5, width = 3.5)
+
+```
+
+```{r}
+
+# THESE DON"T WORK (for gtrack)
+
+plotTracks(biomTrack)
+
+
+# Gene coordinates
+ensemblhg19 <- useMart(biomart="ENSEMBL_MART_ENSEMBL",
+                  host="grch37.ensembl.org",
+                  path="/biomart/martservice", 
+                  dataset="hsapiens_gene_ensembl")
+
+# Only use standard human chromosomes
+normal.chroms <- c(1:22, "X", "Y", "M")
+
+txdb <- TxDb.Hsapiens.UCSC.hg19.knownGene
+seqlevels(txdb) <- "chr11"
+genes(txdb)
+transcripts(txdb)
+exons(txdb)
+cds(txdb)
+GRList <- transcriptsBy(txdb, by = "gene")
+cols <- c("GENEID", "TXCHROM", "TXEND", "TXID", "TXNAME", "TXSTART", "TXSTRAND", "TXTYPE")
+txdb_chr11 <- select(txdb, columns = cols, keytype = "GENEID")
+
+# Over on hoffman2 (of any version of R/4.0)
+bm <- useMart(host = "grch37.ensembl.org", 
+              biomart = "ENSEMBL_MART_ENSEMBL", 
+              dataset = "hsapiens_gene_ensembl")
+biomTrack <- BiomartGeneRegionTrack(genome = "hg19", chromosome = 11, 
+                                    start = 60000000, end = 63000000,
+                                    name = "ENSEMBL", biomart = bm)
+saveRDS(biomTrack, "~/project-gandalm/chloeyap/biomTrack_chr11_60000000_63000000.rds")
+biomTrack <- readRDS("~/Documents/Research/ASD/Output/5_metabolomics/analysis/smr/biomTrack_chr11_60000000_63000000.rds")
+plotTracks(biomTrack)
+
+data(geneModels)
+grtrack <- GeneRegionTrack(geneModels, genome = "hg19", chromosome = 11, 
+                           name = "foo")
+plotTracks(grtrack, from = 61111346, to = 62096356)
+
+
+pco_sumstats <- read.table("/Volumes/YAPASD-Q0851/uqcyap3/ASD/Data/5_metabolomics/analysis/smr/sumstats_busselton/PC.O.18.0.20.4..esd", header = T, as.is = T)
+
+```

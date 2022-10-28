@@ -1,0 +1,465 @@
+---
+title: "Metabolomics TWAS analysis (FADS region)"
+author: "Chloe Yap"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  epuRate::PCTG:
+    toc: TRUE
+    number_sections: FALSE
+    code_folding: "hide"
+    
+---
+
+# Set up
+
+## Libraries
+
+```{r}
+
+library(tidyverse)
+library(data.table)
+library(broom)
+library(GGally)
+
+```
+
+## Directories
+
+```{r}
+
+lipids_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Individual_lipids.csv"
+lipids_class_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Total_lipids_class.csv"
+batch_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Annotation_Batch.csv"
+outliers_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Sample_outliers.csv"
+outliers_lipids_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/analysis/outliers_lipids_batch.id"
+anno_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Annotation.csv"
+pheno_aab_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/Phenotype/extracted_pheno/cognitive_crossancestry_child.pheno"
+pheno_aab_qtab_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/Phenotype/extracted_pheno/AAB_QTAB_aggregated.pheno"
+diet_raw_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/Diet/AES_ACRC_QTAB/AES_ACRC_QTAB_diet_metabolomics.txt"
+diet_pc_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/Diet/AES_ACRC_QTAB/AES_ACRC_QTAB_diet_PC_metabolomics_264_pcenergy_PC13_clr_dietonly.csv"
+##### ADD pePCs on new subset of data
+
+```
+
+## Read-in data
+
+```{r}
+
+lipids <- read.csv(lipids_dir, header = T, as.is = T)
+lipids_class <- read.csv(lipids_class_dir, header = T, as.is = T)
+batch <- read.csv(batch_dir, header = T, as.is = T)
+outliers <- read.csv(outliers_dir, header = T, as.is = T)
+outliers_lipids <- read.delim(outliers_lipids_dir, header = F, as.is = T)
+anno <- read.csv(anno_dir, header = T, as.is = T)
+anno_class.tmp <- read.csv(lipids_class_dir, header = F, as.is = T)
+pheno_aab_full <- read.delim(pheno_aab_dir, header = T, as.is = T)
+pheno_aab_qtab <- read.delim(pheno_aab_qtab_dir, header = T, as.is = T)
+diet_raw <- read.delim(diet_raw_dir, header = T, as.is = T)
+diet_pc <- read.csv(diet_pc_dir, header = T, as.is = T)
+
+```
+
+## Clean data
+
+```{r}
+
+pheno_full <- left_join(pheno_aab_qtab, pheno_aab_full)
+pheno.tmp <- left_join(lipids[,1:2], pheno_full)
+pheno <- pheno.tmp[order(match(pheno.tmp$IID, lipids$IID)),]
+pheno <- left_join(pheno, batch, by = "RunID")
+
+rm_oldpePC <- grep("diet_pe", colnames(pheno))
+pheno <- pheno[,-rm_oldpePC]
+pheno <- left_join(pheno, diet_pc, by = "IID")
+
+micro_col <- c("fibre","thiamin","riboflavin","niacinequiv","vitc","folate","vita","retinol","betacarotine","sodium","potassium","magnesium","calcium","phosphorus","iron","zinc")
+macro_col <- c("protein","fats","satfats","polyfats","monofats","cholesterol","carbohydrate","sugars")
+pe_col <- c("peprotein", "pecarbohydrate", "pefats", "pesatfats", "pepolyfats", "pemonofats", "pealcohol", "pecore", "penoncore", "peveg", "pefruit", "pemeat", "pealt", "pegrains", "pedairy", "pesweet_drink", "pepack_snack", "peconfect", "pebaked_products", "petakeaway", "pecondiments", "pefatty_meats", "pefatty_meats", "pealcohol_bev", "pemisc")
+arfs_col <- colnames(diet_raw)[grep("^arfs_", colnames(diet_raw))]
+diet_derived <- diet_raw %>% dplyr::select(IID, all_of(c(micro_col, macro_col, pe_col, arfs_col)))
+pheno <- left_join(pheno, diet_derived, by = "IID")
+
+# Tidy up columns
+pheno$iq_dq_wisccomp_mselnv_nih <- as.numeric(pheno$iq_dq_wisccomp_mselnv_nih)
+
+identical(pheno$IID, lipids$IID)
+identical(pheno$IID, lipids_class$IID)
+
+# Add outliers column
+pheno$outliers <- as.character(ifelse(pheno$IID %in% outliers$IID, pheno$IID, NA))
+
+# Add adverse events column
+adverse_event.id <- c(2202542, 4406321, 3304969, 2202511, 4406320, 4406272, 3392391, 4406348, 1101685, 1101639, 2202554, 3304926)
+pheno$adverse_event <- ifelse(pheno$IID %in% adverse_event.id, pheno$IID, NA)
+
+# Check that there are no cotwins in the dataset
+qtabtwin <- c(258404, 258108, 258580, 258625, 258541, 258139, 258752, 258810, 258591, 258235, 258724, 258796, 258367, 258934, 258898, 258682, 258631, 258819, 258148, 258218, 258009, 258003, 258021, 25875)
+qtabcotwin <- c(258403, 258175, 258823, 258505, 258046, 258348, 258826, 258093, 258639, 258757, 258634, 258872, 258561, 258536, 258794, 258820, 258429, 258181, 258569, 258294, 258495, 258804, 25883)
+length(which(pheno$IID %in% qtabcotwin))
+
+# Check coding
+pheno$sex <- as.factor(pheno$sex)
+
+# Add age^2
+pheno$age2 <- pheno$age^2
+
+# Add periodic functions for time of sample collection
+# - based on eyeballing the lipid vs collection time graphs, it looksl ike the cosine transform generalises better across lipids
+#pheno$collection_blood_time_sin <- sin((pheno$collection_blood_time/2400)*pi)
+#plot(pheno$collection_blood_time, pheno$collection_blood_time_sin)
+pheno$collection_blood_time_cos <- sin((pheno$collection_blood_time/2400)*2*pi)
+plot(pheno$collection_blood_time, pheno$collection_blood_time_cos)
+
+# Add ifnerred clinical lipids variables
+identical(lipids$IID, lipids_class$IID)
+identical(pheno$IID, lipids_class$IID)
+pheno$cholesterol_lipidome <- lipids$COH + lipids_class$Total.CE
+pheno$triglycerides_lipidome <- lipids_class$Total.TG.SIM.
+
+# Make annotation column with matching format to headers
+anno$Lipid.species_header <- gsub("[^[:alnum:] ]", ".", anno$Lipid.species)
+anno$Lipid.species_header <- gsub(" ", ".", anno$Lipid.species_header)
+
+# Make annotation file for lipids_class
+anno_class <- data.frame(lipid = colnames(lipids_class)[3:ncol(lipids_class)], Lipid.species = as.vector(t(anno_class.tmp[1,3:ncol(anno_class.tmp)])), Lipid.species_header = colnames(lipids_class)[3:ncol(lipids_class)])
+anno_class[] <- lapply(anno_class, as.character)
+
+# Remove TG [NL] from classes and TG [SIM] from lipids
+rm_lipids_class <- grep(".NL.", colnames(lipids_class))
+rm_lipids <- grep(".SIM.", colnames(lipids))
+lipids_class <- lipids_class[,-rm_lipids]
+lipids <- lipids[,-rm_lipids]
+
+# Lipid classes
+rownames(lipids_class) <- lipids_class$IID
+lipids_class.long <- melt(lipids_class, id.vars = c("RunID", "IID"), variable.name = "lipid", value.name = "pmol_mL")
+lipids_class.long <- left_join(lipids_class.long, pheno, by = "IID")
+lipids_class.long <- left_join(lipids_class.long, anno_class, by = "lipid")
+
+# Lipids
+rownames(lipids) <- lipids$IID
+colnames(lipids) <- gsub("[^[:alnum:] ]", ".", colnames(lipids))
+lipids.long <- melt(lipids, id.vars = c("RunID", "IID"), variable.name = "lipid", value.name = "pmol_mL")
+lipids.long <- left_join(lipids.long, pheno)
+anno.tmp <- anno
+colnames(anno.tmp)[which(colnames(anno.tmp) == "Lipid.species_header")] <- "lipid"
+lipids.long <- left_join(lipids.long, anno.tmp, by = "lipid")
+
+```
+
+### Exclude participants
+
+```{r}
+
+# Keep back-ups
+lipids_class_keepSMS <- lipids_class
+lipids_keepSMS <- lipids
+pheno_keepSMS <- pheno
+lipids.long_keepSMS <- lipids.long
+
+# Exclude participant
+lipids_class <- lipids_class %>% filter(IID != 4494902)
+lipids <- lipids %>% filter(IID != 4494902)
+pheno <- pheno %>% filter(IID != 4494902)
+lipids.long <- lipids.long %>% filter(IID != 4494902)
+lipids_class.long <- lipids_class.long %>% filter(IID != 4494902)
+
+# CHOOSE to remove outliers in the OSCA script
+# Keep outliers
+lipids_class_outliers <- lipids_class
+lipids_outliers <- lipids
+pheno_outliers <- pheno
+lipids.long_outliers <- lipids.long
+
+# Exclude outliers
+outliers.id <- as.vector(outliers$IID)
+lipids_class <- lipids_class %>% filter(!IID %in% outliers.id)
+lipids <- lipids %>% filter(!IID %in% outliers.id)
+pheno <- pheno %>% filter(!IID %in% outliers.id)
+lipids.long <- lipids.long %>% filter(!IID %in% outliers.id)
+lipids_class.long <- lipids_class.long %>% filter(!IID %in% outliers.id)
+
+# rownames
+rownames(lipids_class) <- lipids_class$IID
+rownames(lipids) <- lipids$IID
+rownames(pheno) <- lipids$IID
+
+```
+
+### Exclude lipids
+
+```{r}
+
+# Exclude outliers
+outliers_lipids.id <- as.vector(outliers_lipids$V1)
+#lipids_class <- lipids_class %>% select(-all_of(outliers_lipids.id))
+lipids <- lipids %>% dplyr::select(-all_of(outliers_lipids.id))
+lipids.long <- lipids.long %>% filter(!lipid %in% all_of(outliers_lipids.id))
+lipids_class.long <- lipids_class.long %>% filter(!lipid %in% all_of(outliers_lipids.id))
+
+```
+
+# Generate FADS gene TWAS estimates
+
+Have PEC weights for:
+
+- FADS1 ENSG00000149485.wgt.RDat
+- TMEM258 ENSG00000134825.wgt.RDat
+- (not FADS2)
+- these have already been annotated with rsid courtesy of Gandal Lab
+
+## Filter bfile for chr11 SNPs
+
+```{sh, eval = F}
+
+# - extract chr11
+bfile=/QRISdata/Q0851/uqcyap3/ASD/Data/2_GWAS/combine_aab_qtab
+~/plink2 \
+--bfile ${bfile}/AAB_QTAB_MERGED_1_22_ACRC_sex_ref_info0.3_maf01_hwe1e6 \
+--make-bed \
+--chr 11 \
+--out ${bfile}/AAB_QTAB_MERGED_1_22_ACRC_sex_ref_info0.3_maf01_hwe1e6_chr11
+
+bfile=/Users/uqcyap3/Documents/Research/ASD/Data/2_GWAS/combine_aab_qtab
+~/Documents/Research/software/plink2 \
+--bfile ${bfile}/AAB_QTAB_MERGED_1_22_ACRC_sex_ref_info0.3_maf01_hwe1e6_chr11 \
+--freq \
+--out ${bfile}/AAB_QTAB_MERGED_1_22_ACRC_sex_ref_info0.3_maf01_hwe1e6_chr11
+
+```
+
+## Munge format + check overlap of TWAS SNPs with ACRC/QTAB
+
+- this is just a check step
+- format: Name A1 A1Effect
+- N.B. have checked that positional info is in hg19 build
+
+```{r, eval = FALSE}
+
+settings <- c("~/Documents/Research/ASD/Data/Reference/twas/PsychEncode/PsychENCODE_weights_rsid/ENSG00000149485.wgt.RDat", "~/Documents/Research/ASD/Output/5_metabolomics/analysis/twas/ENSG00000149485_FADS1_PEC_PFC_twas_predictor.txt", "enet")
+settings <- c("~/Documents/Research/ASD/Data/Reference/twas/CMC.BRAIN.RNASEQ/CMC.BRAIN.RNASEQ/CMC.FADS1.wgt.RDat", "~/Documents/Research/ASD/Output/5_metabolomics/analysis/twas/FADS1_CMC_PFC_twas_predictor.txt", "enet")
+settings <- c("~/Documents/Research/ASD/Data/Reference/twas/PsychEncode/PsychENCODE_weights_rsid/ENSG00000134825.wgt.Rdat", "~/Documents/Research/ASD/Output/5_metabolomics/analysis/twas/ENSG00000134825_TMEM258_PEC_PFC_twas_predictor.txt", "enet")
+settings <- c("~/Documents/Research/ASD/Data/Reference/twas/GTEx.Whole_Blood.P01/Whole_Blood/Whole_Blood.ENSG00000134824.9.wgt.RDat", "~/Documents/Research/ASD/Output/5_metabolomics/analysis/twas/ENSG00000134824_FADS2_GTEx_WB_twas_predictor.txt", "enet")
+settings <- c("~/Documents/Research/ASD/Data/Reference/twas/YFS.BLOOD.RNAARR/YFS.BLOOD.RNAARR/YFS.FADS1.wgt.RDat", "~/Documents/Research/ASD/Output/5_metabolomics/analysis/twas/FADS1_YFS_WB_twas_predictor.txt", "enet")
+settings <- c("~/Documents/Research/ASD/Data/Reference/twas/NTR.BLOOD.RNAARR/NTR.BLOOD.RNAARR/NTR.FADS2.wgt.RDat", "~/Documents/Research/ASD/Output/5_metabolomics/analysis/twas/FADS2_NTR_WB_twas_predictor.txt", "enet")
+settings <- c("~/Documents/Research/ASD/Data/Reference/twas/GTEx.Whole_Blood.P01/Whole_Blood/Whole_Blood.ENSG00000134825.9.wgt.RDat", "~/Documents/Research/ASD/Output/5_metabolomics/analysis/twas/ENSG00000134825_TMEM258_GTEx_WB_twas_predictor.txt", "enet")
+
+weights_dir <- settings[1]
+weights_out <- settings[2]
+method <- settings[3]
+load(weights_dir)
+#load("~/Documents/Research/ASD/Data/Reference/twas/PsychEncode/PEC_TWAS_weights/ENSG00000149485.wgt.RDat")
+#load("~/Documents/Research/ASD/Data/Reference/twas/GTEx.Whole_Blood.P01/Whole_Blood/Whole_Blood.ENSG00000134824.9.wgt.RDat")
+
+print(cv.performance)
+
+snps_order <- snps[order(match(snps$V2, rownames(wgt.matrix))),]
+score_file <- data.frame(Name = as.character(paste(snps$V1, snps$V4, sep = ":")), A1 = snps_order$V5, A1Effect = data.frame(wgt.matrix)[,method])
+dim(score_file)
+score_file2 <- score_file %>% filter(A1Effect != 0)
+dim(score_file2)
+
+bim_chr11 <- fread("~/Documents/Research/ASD/Data/2_GWAS/combine_aab_qtab/AAB_QTAB_MERGED_1_22_ACRC_sex_ref_info0.3_maf01_hwe1e6_chr11.bim", header = F)
+bim_chr11_match <- data.frame(Name = paste(bim_chr11$V1, bim_chr11$V4, sep = ":"), rsid = bim_chr11$V2)
+
+score_file_bim <- right_join(bim_chr11_match, score_file2, by = "Name")
+length(which(is.na(score_file_bim$rsid))) # number of missing SNPs
+
+score_file_bim_out <- score_file_bim %>% filter(!is.na(rsid)) %>% dplyr::select(c("rsid", "A1", "A1Effect"))
+dim(score_file_bim_out)
+
+write.table(score_file_bim_out, weights_out, col.names = T, row.names = F, quote = F, sep = "\t")
+
+```
+
+## --score function
+
+```{sh, eval = FALSE}
+
+# PRS for the target individuals
+target=ACRC_QTAB
+#bfile=/Volumes/YAPASD-Q0851/uqcyap3/ASD/Data/2_GWAS/combine_aab_qtab
+bfile=~/Documents/Research/ASD/Data/2_GWAS/combine_aab_qtab
+filen=ENSG00000149485_FADS1_PEC_PFC
+filen=FADS1_CMC_PFC
+filen=ENSG00000134825_TMEM258_PEC_PFC
+filen=ENSG00000134824_FADS2_GTEx_WB
+filen=FADS1_YFS_WB
+filen=FADS2_NTR_WB
+filen=ENSG00000134825_TMEM258_GTEx_WB
+out=~/Documents/Research/ASD/Output/5_metabolomics/analysis/twas
+
+~/Documents/Research/software/plink2 \
+--bfile ${bfile}/AAB_QTAB_MERGED_1_22_ACRC_sex_ref_info0.3_maf01_hwe1e6_chr11 \
+--score ${out}/${filen}_twas_predictor.txt list-variants \
+--out ${out}/${target}_pgs.${filen}.twas
+
+```
+
+# Association with sleep phenotypes
+
+```{r}
+
+fads1_pec_pfc_dir <- "/Users/uqcyap3/Documents/Research/ASD/Output/5_metabolomics/analysis/twas/ACRC_QTAB_pgs.ENSG00000149485_FADS1_PEC_PFC.twas.sscore"
+fads1_cmc_pfc_dir <- "/Users/uqcyap3/Documents/Research/ASD/Output/5_metabolomics/analysis/twas/ACRC_QTAB_pgs.FADS1_CMC_PFC.twas.sscore"
+tmem258_pec_pfc_dir <- "/Users/uqcyap3/Documents/Research/ASD/Output/5_metabolomics/analysis/twas/ACRC_QTAB_pgs.ENSG00000134825_TMEM258_PEC_PFC.twas.sscore"
+fads2_gtex_wb_dir <- "/Users/uqcyap3/Documents/Research/ASD/Output/5_metabolomics/analysis/twas/ACRC_QTAB_pgs.ENSG00000134824_FADS2_GTEx_WB.twas.sscore"
+fads1_yfs_wb_dir <- "/Users/uqcyap3/Documents/Research/ASD/Output/5_metabolomics/analysis/twas/ACRC_QTAB_pgs.FADS1_YFS_WB.twas.sscore"
+fads2_ntr_wb_dir <- "/Users/uqcyap3/Documents/Research/ASD/Output/5_metabolomics/analysis/twas/ACRC_QTAB_pgs.FADS2_NTR_WB.twas.sscore"
+tmem258_gtex_wb_dir <- "/Users/uqcyap3/Documents/Research/ASD/Output/5_metabolomics/analysis/twas/ACRC_QTAB_pgs.ENSG00000134825_TMEM258_GTEx_WB.twas.sscore"
+
+eur_dir <- "~/Documents/Research/ASD/Data/2_GWAS/combine_aab_qtab/AAB_QTAB_MERGED_1_22_ACRC_sex_ref_info0.3_maf01_hwe1e6_EUR.fam"
+
+fads1_pec_pfc <- read.delim(fads1_pec_pfc_dir, header = T, as.is = T)
+colnames(fads1_pec_pfc) <- c("FID", "IID", "NMISS_ALLELE_CT", "NAMED_ALLELE_DOSAGE_SUM", "twas_fads1_pec_pfc")
+fads1_cmc_pfc <- read.delim(fads1_cmc_pfc_dir, header = T, as.is = T)
+colnames(fads1_cmc_pfc) <- c("FID", "IID", "NMISS_ALLELE_CT", "NAMED_ALLELE_DOSAGE_SUM", "twas_fads1_cmc_pfc")
+tmem258_pec_pfc <- read.delim(tmem258_pec_pfc_dir, header = T, as.is = T)
+colnames(tmem258_pec_pfc) <- c("FID", "IID", "NMISS_ALLELE_CT", "NAMED_ALLELE_DOSAGE_SUM", "twas_tmem258_pec_pfc")
+fads2_gtex_wb <- read.delim(fads2_gtex_wb_dir, header = T, as.is = T)
+colnames(fads2_gtex_wb) <- c("FID", "IID", "NMISS_ALLELE_CT", "NAMED_ALLELE_DOSAGE_SUM", "twas_fads2_gtex_wb")
+fads1_yfs_wb <- read.delim(fads1_yfs_wb_dir, header = T, as.is = T)
+colnames(fads1_yfs_wb) <- c("FID", "IID", "NMISS_ALLELE_CT", "NAMED_ALLELE_DOSAGE_SUM", "twas_fads1_yfs_wb")
+fads2_ntr_wb <- read.delim(fads2_ntr_wb_dir, header = T, as.is = T)
+colnames(fads2_ntr_wb) <- c("FID", "IID", "NMISS_ALLELE_CT", "NAMED_ALLELE_DOSAGE_SUM", "twas_fads2_ntr_wb")
+tmem258_gtex_wb <- read.delim(tmem258_gtex_wb_dir, header = T, as.is = T)
+colnames(tmem258_gtex_wb) <- c("FID", "IID", "NMISS_ALLELE_CT", "NAMED_ALLELE_DOSAGE_SUM", "twas_tmem258_gtex_wb")
+
+pheno_lipids <- inner_join(pheno, lipids, by = "IID")
+pheno_fads <- inner_join(pheno_lipids, fads1_pec_pfc, by = "IID")
+pheno_fads <- inner_join(pheno_fads, fads1_cmc_pfc, by = "IID")
+pheno_fads <- inner_join(pheno_fads, tmem258_pec_pfc, by = "IID")
+pheno_fads <- inner_join(pheno_fads, fads2_gtex_wb, by = "IID")
+pheno_fads <- inner_join(pheno_fads, fads1_yfs_wb, by = "IID")
+pheno_fads <- inner_join(pheno_fads, fads2_ntr_wb, by = "IID")
+pheno_fads <- inner_join(pheno_fads, tmem258_gtex_wb, by = "IID")
+
+eur <- read.table(eur_dir, header = F, as.is = T)
+pheno_fads_eur <- pheno_fads %>% filter(IID %in% eur$V1)
+
+```
+
+## Check correlation between FADS gene TWAS estimates
+
+```{r}
+
+ggpairs(pheno_fads[,c("twas_fads1_pec_pfc", "twas_fads1_cmc_pfc", "twas_tmem258_pec_pfc", "twas_fads1_yfs_wb", "twas_fads2_ntr_wb", "twas_tmem258_gtex_wb")])
+
+```
+
+## Check correlation between FADS gene TWAS and lipids
+
+- use PC(O-18:0/20:4) for IQ/DQ and PE(P-19:0/20:4) (b) for chronotype
+
+```{r}
+
+tidy(aov(PC.O.18.0.20.4. ~ age + age2 + sex + Batch + InjectionOrder + twas_fads1_pec_pfc + iq_dq_wisccomp_mselnv_nih, data = pheno_fads_eur)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(PC.O.18.0.20.4. ~ age + age2 + sex + Batch + InjectionOrder + twas_tmem258_pec_pfc + iq_dq_wisccomp_mselnv_nih, data = pheno_fads_eur)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(PC.O.18.0.20.4. ~ age + age2 + sex + Batch + InjectionOrder + twas_fads1_yfs_wb + iq_dq_wisccomp_mselnv_nih, data = pheno_fads_eur)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(PC.O.18.0.20.4. ~ age + age2 + sex + Batch + InjectionOrder + twas_fads2_ntr_wb + iq_dq_wisccomp_mselnv_nih, data = pheno_fads_eur)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(PC.O.18.0.20.4. ~ age + age2 + sex + Batch + InjectionOrder + twas_tmem258_gtex_wb + iq_dq_wisccomp_mselnv_nih, data = pheno_fads_eur)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+
+tidy(aov(PE.P.19.0.20.4...b. ~ age + age2 + sex + Batch + InjectionOrder + twas_fads1_pec_pfc + sleep_cshq_total, data = pheno_fads_eur)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(PE.P.19.0.20.4...b. ~ age + age2 + sex + Batch + InjectionOrder + twas_tmem258_pec_pfc + sleep_cshq_total, data = pheno_fads_eur)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(PE.P.19.0.20.4...b. ~ age + age2 + sex + Batch + InjectionOrder + twas_fads1_yfs_wb + sleep_cshq_total, data = pheno_fads_eur)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(PE.P.19.0.20.4...b. ~ age + age2 + sex + Batch + InjectionOrder + twas_fads2_ntr_wb + sleep_cshq_total, data = pheno_fads_eur)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(PE.P.19.0.20.4...b. ~ age + age2 + sex + Batch + InjectionOrder + twas_tmem258_gtex_wb + sleep_cshq_total, data = pheno_fads_eur)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+
+```
+
+```{r}
+
+# ASD
+lwas_dir <- "~/Documents/Research/ASD/Output/5_metabolomics/analysis/osca/assoc"
+transform_choice <- "int"
+lipid_pca <- readRDS(paste(lwas_dir, "/lipids_", transform_choice, "_rmstoragepre_asd_covdemo.logistic", ".sigpca.rds", sep = ""))
+
+lipid_pcs <- data.frame(IID = as.numeric(rownames(lipid_pca$x)), lipid_pca$x)
+colnames(lipid_pcs)[grep("PC", colnames(lipid_pcs))] <- paste("lwas_hit_", colnames(lipid_pcs)[grep("PC", colnames(lipid_pcs))], sep = "")
+
+pheno_fads_eur_pcs <- inner_join(pheno_fads_eur, lipid_pcs, by = "IID")
+
+tidy(aov(lwas_hit_PC1 ~ age + age2 + sex + Batch + InjectionOrder + twas_fads1_pec_pfc + ASD, data = pheno_fads_eur_pcs)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(lwas_hit_PC1 ~ age + age2 + sex + Batch + InjectionOrder + twas_fads1_yfs_wb + ASD, data = pheno_fads_eur_pcs)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(lwas_hit_PC1 ~ age + age2 + sex + Batch + InjectionOrder + twas_fads2_ntr_wb + ASD, data = pheno_fads_eur_pcs)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(lwas_hit_PC1 ~ age + age2 + sex + Batch + InjectionOrder + twas_tmem258_gtex_wb + ASD, data = pheno_fads_eur_pcs)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+
+# Sleep
+lwas_dir <- "~/Documents/Research/ASD/Output/5_metabolomics/analysis/osca/assoc"
+transform_choice <- "int"
+lipid_pca <- readRDS(paste(lwas_dir, "/lipids_", transform_choice, "_sleep_covdemo.linear", ".sigpca.rds", sep = ""))
+
+lipid_pcs <- data.frame(IID = as.numeric(rownames(lipid_pca$x)), lipid_pca$x)
+colnames(lipid_pcs)[grep("PC", colnames(lipid_pcs))] <- paste("lwas_hit_", colnames(lipid_pcs)[grep("PC", colnames(lipid_pcs))], sep = "")
+
+pheno_fads_eur_pcs <- inner_join(pheno_fads_eur, lipid_pcs, by = "IID")
+
+tidy(aov(lwas_hit_PC1 ~ age + age2 + sex + Batch + InjectionOrder + twas_fads1_pec_pfc + sleep_cshq_total, data = pheno_fads_eur_pcs)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(lwas_hit_PC1 ~ age + age2 + sex + Batch + InjectionOrder + twas_fads1_yfs_wb + sleep_cshq_total, data = pheno_fads_eur_pcs)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(lwas_hit_PC1 ~ age + age2 + sex + Batch + InjectionOrder + twas_fads2_ntr_wb + sleep_cshq_total, data = pheno_fads_eur_pcs)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(lwas_hit_PC1 ~ age + age2 + sex + Batch + InjectionOrder + twas_tmem258_gtex_wb + sleep_cshq_total, data = pheno_fads_eur_pcs)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+
+
+```
+
+## Sleep
+
+```{r}
+
+ggplot(pheno_fads_eur, aes(x = twas_fads1_pec_pfc, y = sleep_cshq_total)) +
+  geom_point(aes(colour = participant_type)) +
+  geom_smooth(method = "lm")
+summary(lm(sleep_cshq_total ~ twas_fads1_pec_pfc, data = pheno_fads_eur))
+
+ggplot(pheno_fads_eur, aes(x = twas_fads2_gtex_wb, y = sleep_cshq_total)) +
+  geom_point(aes(colour = participant_type)) +
+  geom_smooth(method = "lm")
+summary(lm(sleep_cshq_total ~ twas_fads2_gtex_wb, data = pheno_fads_eur))
+
+ggplot(pheno_fads_eur, aes(x = twas_fads1_yfs_wb, y = sleep_cshq_total)) +
+  geom_point(aes(colour = participant_type)) +
+  geom_smooth(method = "lm")
+summary(lm(sleep_cshq_total ~ twas_fads1_yfs_wb, data = pheno_fads_eur))
+
+ggplot(pheno_fads_eur, aes(x = twas_fads2_ntr_wb, y = sleep_cshq_total)) +
+  geom_point(aes(colour = participant_type)) +
+  geom_smooth(method = "lm")
+summary(lm(sleep_cshq_total ~ twas_fads2_ntr_wb, data = pheno_fads_eur))
+
+ggplot(pheno_fads_eur, aes(x = twas_tmem258_gtex_wb, y = sleep_cshq_total)) +
+  geom_point(aes(colour = participant_type)) +
+  geom_smooth(method = "lm")
+summary(lm(sleep_cshq_total ~ twas_tmem258_gtex_wb, data = pheno_fads_eur))
+
+```
+
+## IQ/DQ
+
+```{r}
+
+ggplot(pheno_fads_eur, aes(x = twas_fads1_pec_pfc, y = iq_dq_wisccomp_mselnv_nih)) +
+  geom_point(aes(colour = participant_type)) +
+  geom_smooth(method = "lm")
+summary(lm(iq_dq_wisccomp_mselnv_nih ~ twas_fads1_pec_pfc, data = pheno_fads_eur))
+
+ggplot(pheno_fads_eur, aes(x = twas_fads2_gtex_wb, y = iq_dq_wisccomp_mselnv_nih)) +
+  geom_point(aes(colour = participant_type)) +
+  geom_smooth(method = "lm")
+summary(lm(iq_dq_wisccomp_mselnv_nih ~ twas_fads2_gtex_wb, data = pheno_fads_eur))
+
+ggplot(pheno_fads_eur, aes(x = twas_fads1_yfs_wb, y = iq_dq_wisccomp_mselnv_nih)) +
+  geom_point(aes(colour = participant_type)) +
+  geom_smooth(method = "lm")
+summary(lm(iq_dq_wisccomp_mselnv_nih ~ twas_fads1_yfs_wb, data = pheno_fads_eur))
+
+ggplot(pheno_fads_eur, aes(x = twas_fads2_ntr_wb, y = iq_dq_wisccomp_mselnv_nih)) +
+  geom_point(aes(colour = participant_type)) +
+  geom_smooth(method = "lm")
+summary(lm(iq_dq_wisccomp_mselnv_nih ~ twas_fads2_ntr_wb, data = pheno_fads_eur))
+
+ggplot(pheno_fads_eur, aes(x = twas_tmem258_gtex_wb, y = iq_dq_wisccomp_mselnv_nih)) +
+  geom_point(aes(colour = participant_type)) +
+  geom_smooth(method = "lm")
+summary(lm(iq_dq_wisccomp_mselnv_nih ~ twas_tmem258_gtex_wb, data = pheno_fads_eur))
+
+```

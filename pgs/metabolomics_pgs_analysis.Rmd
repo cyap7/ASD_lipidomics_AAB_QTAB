@@ -1,0 +1,1624 @@
+---
+title: "Metabolomics PGS analyses"
+author: "Chloe Yap"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  epuRate::PCTG:
+    toc: TRUE
+    number_sections: FALSE
+    code_folding: "hide"
+knit: (function(inputFile, encoding) { 
+          rmarkdown::render(inputFile,
+                        encoding=encoding, 
+                        output_file='metabolomics_pgs_lipid_species.html') })
+---
+
+# Basic info
+
+**Nomenclature**
+
+- Description: https://www.caymanchem.com/news/sphingolipid-shorthand
+- Official: https://www.qmul.ac.uk/sbcs/iupac/
+- Annotations:
+    - HMDB: https://hmdb.ca/metabolites/HMDB0011211
+    - Lipid Maps: https://www.lipidmaps.org/databases/lmsd/LMGP01030008?LMID=LMGP01030008
+
+# Set-up
+
+## Libraries
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# You need these libraries to run this template:
+library(rmarkdown)    # install.packages("rmarkdown") 
+library(epuRate)      # devtools::install_github("holtzy/epuRate", force=TRUE)
+library(tidyverse)
+library(data.table)
+library(factoextra)
+library(uwot)
+library(ggplot2)
+library(GGally)
+library(ggforce)
+library(corrplot)
+library(devtools)
+#install_github("vqv/ggbiplot")
+library(ggbiplot)
+library(caret)
+library(DT)
+library(vegan)
+library(ComplexHeatmap)
+library(colorspace)
+library(RColorBrewer)
+library(ggrepel)
+library(wesanderson)
+
+```
+
+## Directories
+
+```{r}
+
+lipids_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Individual_lipids.csv"
+lipids_class_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Total_lipids_class.csv"
+batch_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Annotation_Batch.csv"
+outliers_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Sample_outliers.csv"
+outliers_lipids_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/analysis/outliers_lipids_batch.id"
+anno_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Annotation.csv"
+pheno_aab_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/Phenotype/extracted_pheno/cognitive_crossancestry_child.pheno"
+pheno_aab_qtab_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/Phenotype/extracted_pheno/AAB_QTAB_aggregated.pheno"
+diet_raw_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/Diet/AES_ACRC_QTAB/AES_ACRC_QTAB_diet_metabolomics.txt"
+diet_pc_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/Diet/AES_ACRC_QTAB/AES_ACRC_QTAB_diet_PC_metabolomics_264_pcenergy_PC13_clr_dietonly.csv"
+##### ADD pePCs on new subset of data
+
+```
+
+## Read-in data
+
+```{r}
+
+lipids <- read.csv(lipids_dir, header = T, as.is = T)
+lipids_class <- read.csv(lipids_class_dir, header = T, as.is = T)
+batch <- read.csv(batch_dir, header = T, as.is = T)
+outliers <- read.csv(outliers_dir, header = T, as.is = T)
+outliers_lipids <- read.delim(outliers_lipids_dir, header = F, as.is = T)
+anno <- read.csv(anno_dir, header = T, as.is = T)
+anno_class.tmp <- read.csv(lipids_class_dir, header = F, as.is = T)
+pheno_aab_full <- read.delim(pheno_aab_dir, header = T, as.is = T)
+pheno_aab_qtab <- read.delim(pheno_aab_qtab_dir, header = T, as.is = T)
+diet_raw <- read.delim(diet_raw_dir, header = T, as.is = T)
+diet_pc <- read.csv(diet_pc_dir, header = T, as.is = T)
+
+```
+
+## Clean data
+
+```{r}
+
+pheno_full <- left_join(pheno_aab_qtab, pheno_aab_full)
+pheno.tmp <- left_join(lipids[,1:2], pheno_full)
+pheno <- pheno.tmp[order(match(pheno.tmp$IID, lipids$IID)),]
+pheno <- left_join(pheno, batch, by = "RunID")
+
+rm_oldpePC <- grep("diet_pe", colnames(pheno))
+pheno <- pheno[,-rm_oldpePC]
+pheno <- left_join(pheno, diet_pc, by = "IID")
+
+micro_col <- c("fibre","thiamin","riboflavin","niacinequiv","vitc","folate","vita","retinol","betacarotine","sodium","potassium","magnesium","calcium","phosphorus","iron","zinc")
+macro_col <- c("protein","fats","satfats","polyfats","monofats","cholesterol","carbohydrate","sugars")
+pe_col <- c("peprotein", "pecarbohydrate", "pefats", "pesatfats", "pepolyfats", "pemonofats", "pealcohol", "pecore", "penoncore", "peveg", "pefruit", "pemeat", "pealt", "pegrains", "pedairy", "pesweet_drink", "pepack_snack", "peconfect", "pebaked_products", "petakeaway", "pecondiments", "pefatty_meats", "pefatty_meats", "pealcohol_bev", "pemisc")
+arfs_col <- colnames(diet_raw)[grep("^arfs_", colnames(diet_raw))]
+diet_derived <- diet_raw %>% dplyr::select(IID, all_of(c(micro_col, macro_col, pe_col, arfs_col)))
+pheno <- left_join(pheno, diet_derived, by = "IID")
+
+# Tidy up columns
+pheno$iq_dq_wisccomp_mselnv_nih <- as.numeric(pheno$iq_dq_wisccomp_mselnv_nih)
+
+identical(pheno$IID, lipids$IID)
+identical(pheno$IID, lipids_class$IID)
+
+# Add outliers column
+pheno$outliers <- as.character(ifelse(pheno$IID %in% outliers$IID, pheno$IID, NA))
+
+# Add adverse events column
+adverse_event.id <- c(2202542, 4406321, 3304969, 2202511, 4406320, 4406272, 3392391, 4406348, 1101685, 1101639, 2202554, 3304926)
+pheno$adverse_event <- ifelse(pheno$IID %in% adverse_event.id, pheno$IID, NA)
+
+# Check that there are no cotwins in the dataset
+qtabtwin <- c(258404, 258108, 258580, 258625, 258541, 258139, 258752, 258810, 258591, 258235, 258724, 258796, 258367, 258934, 258898, 258682, 258631, 258819, 258148, 258218, 258009, 258003, 258021, 25875)
+qtabcotwin <- c(258403, 258175, 258823, 258505, 258046, 258348, 258826, 258093, 258639, 258757, 258634, 258872, 258561, 258536, 258794, 258820, 258429, 258181, 258569, 258294, 258495, 258804, 25883)
+length(which(pheno$IID %in% qtabcotwin))
+
+# Check coding
+pheno$sex <- as.factor(pheno$sex)
+
+# Add age^2
+pheno$age2 <- pheno$age^2
+
+# Add periodic functions for time of sample collection
+# - based on eyeballing the lipid vs collection time graphs, it looksl ike the cosine transform generalises better across lipids
+#pheno$collection_blood_time_sin <- sin((pheno$collection_blood_time/2400)*pi)
+#plot(pheno$collection_blood_time, pheno$collection_blood_time_sin)
+pheno$collection_blood_time_cos <- sin((pheno$collection_blood_time/2400)*2*pi)
+plot(pheno$collection_blood_time, pheno$collection_blood_time_cos)
+
+# Add ifnerred clinical lipids variables
+identical(lipids$IID, lipids_class$IID)
+identical(pheno$IID, lipids_class$IID)
+pheno$cholesterol_lipidome <- lipids$COH + lipids_class$Total.CE
+pheno$triglycerides_lipidome <- lipids_class$Total.TG.SIM.
+
+# Make annotation column with matching format to headers
+anno$Lipid.species_header <- gsub("[^[:alnum:] ]", ".", anno$Lipid.species)
+anno$Lipid.species_header <- gsub(" ", ".", anno$Lipid.species_header)
+
+# Make annotation file for lipids_class
+anno_class <- data.frame(lipid = colnames(lipids_class)[3:ncol(lipids_class)], Lipid.species = as.vector(t(anno_class.tmp[1,3:ncol(anno_class.tmp)])), Lipid.species_header = colnames(lipids_class)[3:ncol(lipids_class)])
+anno_class[] <- lapply(anno_class, as.character)
+
+# Remove TG [NL] from classes and TG [SIM] from lipids
+rm_lipids_class <- grep(".NL.", colnames(lipids_class))
+rm_lipids <- grep(".SIM.", colnames(lipids))
+lipids_class <- lipids_class[,-rm_lipids]
+lipids <- lipids[,-rm_lipids]
+
+# Lipid classes
+rownames(lipids_class) <- lipids_class$IID
+lipids_class.long <- melt(lipids_class, id.vars = c("RunID", "IID"), variable.name = "lipid", value.name = "pmol_mL")
+lipids_class.long <- left_join(lipids_class.long, pheno, by = "IID")
+lipids_class.long <- left_join(lipids_class.long, anno_class, by = "lipid")
+
+# Lipids
+rownames(lipids) <- lipids$IID
+colnames(lipids) <- gsub("[^[:alnum:] ]", ".", colnames(lipids))
+lipids.long <- melt(lipids, id.vars = c("RunID", "IID"), variable.name = "lipid", value.name = "pmol_mL")
+lipids.long <- left_join(lipids.long, pheno)
+anno.tmp <- anno
+colnames(anno.tmp)[which(colnames(anno.tmp) == "Lipid.species_header")] <- "lipid"
+lipids.long <- left_join(lipids.long, anno.tmp, by = "lipid")
+
+```
+
+### Exclude participants
+
+```{r}
+
+# Keep back-ups
+lipids_class_keepSMS <- lipids_class
+lipids_keepSMS <- lipids
+pheno_keepSMS <- pheno
+lipids.long_keepSMS <- lipids.long
+
+# Exclude participant
+lipids_class <- lipids_class %>% filter(IID != 4494902)
+lipids <- lipids %>% filter(IID != 4494902)
+pheno <- pheno %>% filter(IID != 4494902)
+lipids.long <- lipids.long %>% filter(IID != 4494902)
+lipids_class.long <- lipids_class.long %>% filter(IID != 4494902)
+
+# CHOOSE to remove outliers in the OSCA script
+# Keep outliers
+lipids_class_outliers <- lipids_class
+lipids_outliers <- lipids
+pheno_outliers <- pheno
+lipids.long_outliers <- lipids.long
+
+# Exclude outliers
+outliers.id <- as.vector(outliers$IID)
+lipids_class <- lipids_class %>% filter(!IID %in% outliers.id)
+lipids <- lipids %>% filter(!IID %in% outliers.id)
+pheno <- pheno %>% filter(!IID %in% outliers.id)
+lipids.long <- lipids.long %>% filter(!IID %in% outliers.id)
+lipids_class.long <- lipids_class.long %>% filter(!IID %in% outliers.id)
+
+# rownames
+rownames(lipids_class) <- lipids_class$IID
+rownames(lipids) <- lipids$IID
+rownames(pheno) <- lipids$IID
+
+```
+
+### Exclude lipids
+
+```{r}
+
+# Exclude outliers
+outliers_lipids.id <- as.vector(outliers_lipids$V1)
+#lipids_class <- lipids_class %>% select(-all_of(outliers_lipids.id))
+lipids <- lipids %>% dplyr::select(-all_of(outliers_lipids.id))
+lipids.long <- lipids.long %>% filter(!lipid %in% all_of(outliers_lipids.id))
+lipids_class.long <- lipids_class.long %>% filter(!lipid %in% all_of(outliers_lipids.id))
+
+```
+
+## Analysis-specific set-up
+
+### Settings
+
+```{r}
+
+datan <- "lipid_species"
+
+#datan <- "lipid_class"
+
+```
+
+### Directories
+
+```{r}
+
+if (datan == "lipid_species") {
+  lipids_pgs_eur_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/analysis/pgs/pgs_lipids_EUR/lipid_species/lipid_species_pgs.txt"
+  lipids_pgs_eur_nsnp_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/analysis/pgs/pgs_lipids_EUR/lipid_species/lipid_species_pgs.nsnp"
+
+} else if (datan == "lipid_class") {
+  lipids_pgs_eur_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/analysis/pgs/pgs_lipids_EUR/lipid_class/lipid_class_pgs.txt"
+  lipids_pgs_eur_nsnp_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/analysis/pgs/pgs_lipids_EUR/lipid_class/lipid_class_pgs.nsnp"
+
+}
+
+assoc_sig_results_dir <- "/Users/uqcyap3/Documents/Research/ASD/Output/5_metabolomics/analysis/osca/assoc/osca_assoc_sig_aggregated.txt"
+
+```
+
+### Read-in
+
+```{r}
+
+lipids_pgs_eur_full <- read.delim(lipids_pgs_eur_dir, header = T, as.is = T)
+lipids_pgs_eur_nsnp <- read.delim(lipids_pgs_eur_nsnp_dir, header = T, as.is = T)
+
+assoc_sig_results <- read.delim(assoc_sig_results_dir, header = T, as.is = T)
+assoc_sig_lipids <- unique(assoc_sig_results$Probe)
+assoc_sig_lipids_keep <- assoc_sig_lipids[which(assoc_sig_lipids %in% colnames(lipids_pgs_eur_full))]
+
+assoc_sig_results_pheno <- assoc_sig_results %>% filter(Probe %in% colnames(lipids_pgs_eur_full)) %>% dplyr::select(c("Probe", "Pheno")) %>%
+    mutate(Pheno = case_when(Pheno == "ASD" ~ "ASD",
+                        Pheno == "age" ~ "age",
+                        Pheno == "tanner_genital" ~ "Tanner (genital)",
+                        Pheno == "BMI" ~ "BMI",
+                        Pheno == "sex" ~ "sex",
+                        Pheno == "IQ_DQ" ~ "IQ/DQ",
+                        Pheno == "sleep_problems" ~ "Sleep (CSHQ)"))
+
+colnames(assoc_sig_results_pheno) <- c("lipid", "Pheno")
+
+```
+
+### Subset PGS df to lipidomics subset
+
+- N.B. only have n=646 as generated PGS on EUR
+
+```{r}
+
+lipids_pgs_eur <- lipids_pgs_eur_full %>% filter(IID %in% lipids$IID) %>% dplyr::select(c("IID", all_of(assoc_sig_lipids_keep)))
+
+```
+
+# PGS EDA
+
+## Standardise PGS
+
+- do this across people kept in the analysis
+
+```{r}
+
+lipids_pgs_eur_std <- data.frame(IID = lipids_pgs_eur$IID, apply(lipids_pgs_eur[2:ncol(lipids_pgs_eur)], 2, function(x) (x-mean(x))/sd(x)))
+
+```
+
+**N.B. not all are normally distributed ...**
+
+```{r, eval = FALSE}
+
+hist(lipids_pgs_eur_std$AC.12.0.)
+hist(lipids_pgs_eur_std$AC.15.0...a.)
+
+```
+
+## Plot NSNPs used in PGS per lipid
+
+```{r}
+
+ggplot(lipids_pgs_eur_nsnp, aes(x = NSNP)) + geom_histogram()
+
+```
+
+# R2 of lipid concentraions explained by PGS
+
+## Munge data
+
+- get 490 lipid species with PGS
+
+```{r}
+
+# Long format
+lipids_pgs_eur_std.long <- data.table::melt(lipids_pgs_eur_std, id.var = "IID", variable.name = "lipid", value.name = "lipid_PGS_EUR")
+
+# Join to lipids.long
+if (datan == "lipid_species") {
+  lipids_pgs.long <- inner_join(lipids.long, lipids_pgs_eur_std.long, by = c("IID", "lipid"))
+} else if (datan == "lipid_class") {
+  lipids_pgs.long <- inner_join(lipids_class.long, lipids_pgs_eur_std.long, by = c("IID", "lipid"))
+}
+
+```
+
+## Identify lipids with significant R2 of linear model for lipid concentration ~ PGS
+
+```{r, eval = FALSE}
+
+lipids_pgs.ls <- lipids_pgs.long %>% 
+  filter(!is.na(age)) %>% filter(!is.na(sex)) %>% filter(!is.na(participant_type)) %>% 
+  group_by(lipid) %>% do(model = lm(pmol_mL ~ lipid_PGS_EUR, data = .))
+
+rsq <- unlist(lapply(lipids_pgs.ls$model, function(x) summary(x)$r.squared))
+pval <- unlist(lapply(lipids_pgs.ls$model, function(x) pf(summary(x)$fstatistic[1], summary(x)$fstatistic[2], summary(x)$fstatistic[3], lower.tail = FALSE)))
+
+lipids_pgs_stats <- data.frame(lipid = unique(lipids_pgs.long$lipid), R2_pgs = rsq, p = pval)
+
+datatable(lipids_pgs_stats %>% arrange(desc(R2_pgs)) %>% mutate_if(is.numeric, ~signif(., 3)))
+
+# Subset to lipids with significant R2
+lipids_pgs_stats_sig <- lipids_pgs_stats %>% mutate(padj = p.adjust(p, method = "BH")) %>% filter(padj <= 0.05)
+
+write.table(lipids_pgs_stats_sig, "/Volumes/YAPASD-Q0851/uqcyap3/ASD/Data/5_metabolomics/analysis/gwas/pgs_sig_lipids_for_gwas.txt", col.names = T, row.names = F, quote = F, sep = "\t")
+
+write.table(lipids_pgs_stats_sig$lipid, "/Volumes/YAPASD-Q0851/uqcyap3/ASD/Data/5_metabolomics/analysis/gwas/pgs_sig_lipids_for_gwas.id", col.names = F, row.names = F, quote = F, sep = "\t")
+
+tmp <- lipids_pgs_eur_std %>% dplyr::select(c("IID", all_of(lipids_pgs_stats_sig$lipid)))
+identical(colnames(tmp)[2:ncol(tmp)], as.character(lipids_pgs_stats_sig$lipid))
+write.table(tmp[,c(1,1:ncol(tmp))], "/Volumes/YAPASD-Q0851/uqcyap3/ASD/Data/5_metabolomics/analysis/gwas/pgs_sig_lipids_for_gwas.tab", col.names = T, row.names = F, quote = F, sep = "\t")
+write.table(tmp[,c(1,1:ncol(tmp))], "/Volumes/YAPASD-Q0851/uqcyap3/ASD/Data/5_metabolomics/analysis/gwas/pgs_sig_lipids_for_gwas.pheno", col.names = F, row.names = F, quote = F, sep = "\t")
+
+# Write each file
+for (i in 1:length(lipids_pgs_stats_sig$lipid)) {
+  j <- i+1
+  filen <- as.character(lipids_pgs_stats_sig$lipid[i])
+  print(filen)
+  write.table(tmp[,c(1,1,j)], paste("/Volumes/YAPASD-Q0851/uqcyap3/ASD/Data/5_metabolomics/analysis/gwas/", "lipids_", filen, "_INT", ".pheno", sep = ""), col.names = F, row.names = F, quote = F, sep = "\t")
+}
+
+```
+
+## Model including lipid species ~ PGS + agesex + ASD
+
+```{r}
+
+# Add pheno for add_trait analysis
+lipids_pgs.long.assoc <- assoc_sig_results_pheno %>% inner_join(lipids_pgs.long, ., by = "lipid")
+
+```
+
+- iteratively add on the R2 estimates from different models
+
+```{r}
+
+library(broom)
+tmp_all_asd_stats <- lipids_pgs.long.assoc %>% 
+  nest(data = -lipid) %>% 
+  mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + ASD, data = .)), tidied = purrr::map(model, tidy)) %>%
+  unnest(tidied) %>% 
+  dplyr::select(-c("data", "model")) %>%
+  group_by(lipid) %>%
+  dplyr::summarise(lipid = lipid, term = term, sumsq_prop = sumsq/sum(sumsq)) %>%
+  pivot_wider(names_from = "term", values_from = "sumsq_prop")
+
+# Add lipid names
+if (datan == "lipid_species") {
+  tmp <- data.frame(lipid = anno$Lipid.species_header, lipid_name = anno$Lipid.species)
+} else if (datan == "lipid_class") {
+  tmp <- data.frame(lipid = anno_class$Lipid.species_header, lipid_name = anno_class$Lipid.species)
+}
+lipids_pgs_r2_agesex_asd <- inner_join(tmp_all_asd_stats, tmp, by = "lipid")
+
+datatable(lipids_pgs_r2_agesex_asd %>% arrange(desc(lipid_PGS_EUR)) %>% mutate_if(is.numeric, ~signif(., 3)))
+
+```
+
+```{r}
+
+tmp_neurodev_asd_stats <- lipids_pgs.long.assoc %>% 
+  filter(Pheno == "ASD") %>% 
+  nest(data = -lipid) %>% 
+  mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + ASD, data = .)), tidied = purrr::map(model, tidy)) %>%
+  unnest(tidied) %>% 
+  dplyr::select(-c("data", "model")) %>%
+  group_by(lipid) %>%
+  dplyr::summarise(lipid = lipid, term = term, sumsq_prop = sumsq/sum(sumsq)) %>%
+  pivot_wider(names_from = "term", values_from = "sumsq_prop") %>%
+  mutate(Pheno = "ASD")
+colnames(tmp_neurodev_asd_stats)[which(colnames(tmp_neurodev_asd_stats) == "ASD")] <- "trait"
+
+tmp_neurodev_iqdq_stats <- lipids_pgs.long.assoc %>% 
+  filter(Pheno == "IQ/DQ") %>% 
+  nest(data = -lipid) %>% 
+  mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + iq_dq_wisccomp_mselnv_nih, data = .)), tidied = purrr::map(model, tidy)) %>%
+  unnest(tidied) %>% 
+  dplyr::select(-c("data", "model")) %>%
+  group_by(lipid) %>%
+  dplyr::summarise(lipid = lipid, term = term, sumsq_prop = sumsq/sum(sumsq)) %>%
+  pivot_wider(names_from = "term", values_from = "sumsq_prop") %>%
+  mutate(Pheno = "IQ/DQ")
+colnames(tmp_neurodev_iqdq_stats)[which(colnames(tmp_neurodev_iqdq_stats) == "iq_dq_wisccomp_mselnv_nih")] <- "trait"
+
+tmp_neurodev_sleep_stats <- lipids_pgs.long.assoc %>% 
+  filter(Pheno == "Sleep (CSHQ)") %>% 
+  nest(data = -lipid) %>% 
+  mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + sleep_cshq_total, data = .)), tidied = purrr::map(model, tidy)) %>%
+  unnest(tidied) %>% 
+  dplyr::select(-c("data", "model")) %>%
+  group_by(lipid) %>%
+  dplyr::summarise(lipid = lipid, term = term, sumsq_prop = sumsq/sum(sumsq)) %>%
+  pivot_wider(names_from = "term", values_from = "sumsq_prop") %>%
+  mutate(Pheno = "Sleep (CSHQ)")
+colnames(tmp_neurodev_sleep_stats)[which(colnames(tmp_neurodev_sleep_stats) == "sleep_cshq_total")] <- "trait"
+
+lipids_pgs_r2_agesex_neurodev <- rbind(tmp_neurodev_asd_stats, tmp_neurodev_iqdq_stats, tmp_neurodev_sleep_stats)
+
+# Add lipid names
+if (datan == "lipid_species") {
+  tmp <- data.frame(lipid = anno$Lipid.species_header, lipid_name = anno$Lipid.species)
+} else if (datan == "lipid_class") {
+  tmp <- data.frame(lipid = anno_class$Lipid.species_header, lipid_name = anno_class$Lipid.species)
+}
+lipids_pgs_r2_agesex_neurodev <- inner_join(lipids_pgs_r2_agesex_neurodev, tmp, by = "lipid")
+
+```
+
+
+## Model including lipid species ~ PGS + agesex + batch + ASD
+
+```{r}
+
+tmp_all_asd_stats <- lipids_pgs.long.assoc %>% 
+  nest(data = -lipid) %>% 
+  mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + ASD, data = .)), tidied = purrr::map(model, tidy)) %>%
+  unnest(tidied) %>% 
+  dplyr::select(-c("data", "model")) %>%
+  group_by(lipid) %>%
+  dplyr::summarise(lipid = lipid, term = term, sumsq_prop = sumsq/sum(sumsq)) %>%
+  pivot_wider(names_from = "term", values_from = "sumsq_prop")
+
+# Add lipid names
+if (datan == "lipid_species") {
+  tmp <- data.frame(lipid = anno$Lipid.species_header, lipid_name = anno$Lipid.species)
+} else if (datan == "lipid_class") {
+  tmp <- data.frame(lipid = anno_class$Lipid.species_header, lipid_name = anno_class$Lipid.species)
+}
+lipids_pgs_r2_agesex_batch_asd <- inner_join(tmp_all_asd_stats, tmp, by = "lipid")
+
+datatable(lipids_pgs_r2_agesex_batch_asd %>% arrange(desc(lipid_PGS_EUR)) %>% mutate_if(is.numeric, ~signif(., 3)))
+
+```
+
+```{r}
+
+tmp_neurodev_asd_stats <- lipids_pgs.long.assoc %>% 
+  filter(Pheno == "ASD") %>% 
+  nest(data = -lipid) %>% 
+  mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + ASD, data = .)), tidied = purrr::map(model, tidy)) %>%
+  unnest(tidied) %>% 
+  dplyr::select(-c("data", "model")) %>%
+  group_by(lipid) %>%
+  dplyr::summarise(lipid = lipid, term = term, sumsq_prop = sumsq/sum(sumsq)) %>%
+  pivot_wider(names_from = "term", values_from = "sumsq_prop") %>%
+  mutate(Pheno = "ASD")
+colnames(tmp_neurodev_asd_stats)[which(colnames(tmp_neurodev_asd_stats) == "ASD")] <- "trait"
+
+tmp_neurodev_iqdq_stats <- lipids_pgs.long.assoc %>% 
+  filter(Pheno == "IQ/DQ") %>% 
+  nest(data = -lipid) %>% 
+  mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + iq_dq_wisccomp_mselnv_nih, data = .)), tidied = purrr::map(model, tidy)) %>%
+  unnest(tidied) %>% 
+  dplyr::select(-c("data", "model")) %>%
+  group_by(lipid) %>%
+  dplyr::summarise(lipid = lipid, term = term, sumsq_prop = sumsq/sum(sumsq)) %>%
+  pivot_wider(names_from = "term", values_from = "sumsq_prop") %>%
+  mutate(Pheno = "IQ/DQ")
+colnames(tmp_neurodev_iqdq_stats)[which(colnames(tmp_neurodev_iqdq_stats) == "iq_dq_wisccomp_mselnv_nih")] <- "trait"
+
+tmp_neurodev_sleep_stats <- lipids_pgs.long.assoc %>% 
+  filter(Pheno == "Sleep (CSHQ)") %>% 
+  nest(data = -lipid) %>% 
+  mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + sleep_cshq_total, data = .)), tidied = purrr::map(model, tidy)) %>%
+  unnest(tidied) %>% 
+  dplyr::select(-c("data", "model")) %>%
+  group_by(lipid) %>%
+  dplyr::summarise(lipid = lipid, term = term, sumsq_prop = sumsq/sum(sumsq)) %>%
+  pivot_wider(names_from = "term", values_from = "sumsq_prop") %>%
+  mutate(Pheno = "Sleep (CSHQ)")
+colnames(tmp_neurodev_sleep_stats)[which(colnames(tmp_neurodev_sleep_stats) == "sleep_cshq_total")] <- "trait"
+
+lipids_pgs_r2_agesex_batch_neurodev <- rbind(tmp_neurodev_asd_stats, tmp_neurodev_iqdq_stats, tmp_neurodev_sleep_stats)
+
+# Add lipid names
+if (datan == "lipid_species") {
+  tmp <- data.frame(lipid = anno$Lipid.species_header, lipid_name = anno$Lipid.species)
+} else if (datan == "lipid_class") {
+  tmp <- data.frame(lipid = anno_class$Lipid.species_header, lipid_name = anno_class$Lipid.species)
+}
+lipids_pgs_r2_agesex_batch_neurodev <- inner_join(lipids_pgs_r2_agesex_batch_neurodev, tmp, by = "lipid")
+
+```
+
+## Model including lipid species ~ PGS + agesex + batch + time + ASD
+
+```{r}
+
+tmp_all_asd_stats <- lipids_pgs.long.assoc %>% 
+  nest(data = -lipid) %>% 
+  mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + collection_blood_time_cos + ASD, data = .)), tidied = purrr::map(model, tidy)) %>%
+  unnest(tidied) %>% 
+  dplyr::select(-c("data", "model")) %>%
+  group_by(lipid) %>%
+  dplyr::summarise(lipid = lipid, term = term, sumsq_prop = sumsq/sum(sumsq)) %>%
+  pivot_wider(names_from = "term", values_from = "sumsq_prop")
+
+# Add lipid names
+if (datan == "lipid_species") {
+  tmp <- data.frame(lipid = anno$Lipid.species_header, lipid_name = anno$Lipid.species)
+} else if (datan == "lipid_class") {
+  tmp <- data.frame(lipid = anno_class$Lipid.species_header, lipid_name = anno_class$Lipid.species)
+}
+lipids_pgs_r2_agesex_batchtime_asd <- inner_join(tmp_all_asd_stats, tmp, by = "lipid")
+
+datatable(lipids_pgs_r2_agesex_batchtime_asd %>% arrange(desc(lipid_PGS_EUR)) %>% mutate_if(is.numeric, ~signif(., 3)))
+
+```
+
+```{r}
+
+tmp_neurodev_asd_stats <- lipids_pgs.long.assoc %>% 
+  filter(Pheno == "ASD") %>% 
+  nest(data = -lipid) %>% 
+  mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + collection_blood_time_cos + ASD, data = .)), tidied = purrr::map(model, tidy)) %>%
+  unnest(tidied) %>% 
+  dplyr::select(-c("data", "model")) %>%
+  group_by(lipid) %>%
+  dplyr::summarise(lipid = lipid, term = term, sumsq_prop = sumsq/sum(sumsq)) %>%
+  pivot_wider(names_from = "term", values_from = "sumsq_prop") %>%
+  mutate(Pheno = "ASD")
+colnames(tmp_neurodev_asd_stats)[which(colnames(tmp_neurodev_asd_stats) == "ASD")] <- "trait"
+
+tmp_neurodev_iqdq_stats <- lipids_pgs.long.assoc %>% 
+  filter(Pheno == "IQ/DQ") %>% 
+  nest(data = -lipid) %>% 
+  mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + collection_blood_time_cos + iq_dq_wisccomp_mselnv_nih, data = .)), tidied = purrr::map(model, tidy)) %>%
+  unnest(tidied) %>% 
+  dplyr::select(-c("data", "model")) %>%
+  group_by(lipid) %>%
+  dplyr::summarise(lipid = lipid, term = term, sumsq_prop = sumsq/sum(sumsq)) %>%
+  pivot_wider(names_from = "term", values_from = "sumsq_prop") %>%
+  mutate(Pheno = "IQ/DQ")
+colnames(tmp_neurodev_iqdq_stats)[which(colnames(tmp_neurodev_iqdq_stats) == "iq_dq_wisccomp_mselnv_nih")] <- "trait"
+
+tmp_neurodev_sleep_stats <- lipids_pgs.long.assoc %>% 
+  filter(Pheno == "Sleep (CSHQ)") %>% 
+  nest(data = -lipid) %>% 
+  mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + collection_blood_time_cos + sleep_cshq_total, data = .)), tidied = purrr::map(model, tidy)) %>%
+  unnest(tidied) %>% 
+  dplyr::select(-c("data", "model")) %>%
+  group_by(lipid) %>%
+  dplyr::summarise(lipid = lipid, term = term, sumsq_prop = sumsq/sum(sumsq)) %>%
+  pivot_wider(names_from = "term", values_from = "sumsq_prop") %>%
+  mutate(Pheno = "Sleep (CSHQ)")
+colnames(tmp_neurodev_sleep_stats)[which(colnames(tmp_neurodev_sleep_stats) == "sleep_cshq_total")] <- "trait"
+
+lipids_pgs_r2_agesex_batchtime_neurodev <- rbind(tmp_neurodev_asd_stats, tmp_neurodev_iqdq_stats, tmp_neurodev_sleep_stats)
+
+# Add lipid names
+if (datan == "lipid_species") {
+  tmp <- data.frame(lipid = anno$Lipid.species_header, lipid_name = anno$Lipid.species)
+} else if (datan == "lipid_class") {
+  tmp <- data.frame(lipid = anno_class$Lipid.species_header, lipid_name = anno_class$Lipid.species)
+}
+lipids_pgs_r2_agesex_batchtime_neurodev <- inner_join(lipids_pgs_r2_agesex_batchtime_neurodev, tmp, by = "lipid")
+
+```
+
+## Model including lipid species ~ PGS + agesex + diet + ASD
+
+```{r}
+
+tmp_all_asd_stats <- lipids_pgs.long.assoc %>% 
+  nest(data = -lipid) %>% 
+  mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + PC1_diet_pe + PC2_diet_pe + PC3_diet_pe + ASD, data = .)), tidied = purrr::map(model, tidy)) %>%
+#  mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + protein + cholesterol + satfats + polyfats + monofats + carbohydrate + ASD, data = .)), tidied = purrr::map(model, tidy)) %>%
+  unnest(tidied) %>% 
+  dplyr::select(-c("data", "model")) %>%
+  group_by(lipid) %>%
+  dplyr::summarise(lipid = lipid, term = term, sumsq_prop = sumsq/sum(sumsq)) %>%
+  pivot_wider(names_from = "term", values_from = "sumsq_prop")
+
+# Add lipid names
+if (datan == "lipid_species") {
+  tmp <- data.frame(lipid = anno$Lipid.species_header, lipid_name = anno$Lipid.species)
+} else if (datan == "lipid_class") {
+  tmp <- data.frame(lipid = anno_class$Lipid.species_header, lipid_name = anno_class$Lipid.species)
+}
+lipids_pgs_r2_agesex_batch_diet_asd <- inner_join(tmp_all_asd_stats, tmp, by = "lipid")
+
+datatable(lipids_pgs_r2_agesex_batch_diet_asd %>% arrange(desc(lipid_PGS_EUR)) %>% mutate_if(is.numeric, ~signif(., 3)))
+
+```
+
+```{r}
+
+tmp_neurodev_asd_stats <- lipids_pgs.long.assoc %>% 
+  filter(Pheno == "ASD") %>% 
+  nest(data = -lipid) %>% 
+  mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + PC1_diet_pe + PC2_diet_pe + PC3_diet_pe + ASD, data = .)), tidied = purrr::map(model, tidy)) %>%
+#  mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + protein + cholesterol + satfats + polyfats + monofats + carbohydrate + ASD, data = .)), tidied = purrr::map(model, tidy)) %>%
+  unnest(tidied) %>% 
+  dplyr::select(-c("data", "model")) %>%
+  group_by(lipid) %>%
+  dplyr::summarise(lipid = lipid, term = term, sumsq_prop = sumsq/sum(sumsq)) %>%
+  pivot_wider(names_from = "term", values_from = "sumsq_prop") %>%
+  mutate(Pheno = "ASD")
+colnames(tmp_neurodev_asd_stats)[which(colnames(tmp_neurodev_asd_stats) == "ASD")] <- "trait"
+
+tmp_neurodev_iqdq_stats <- lipids_pgs.long.assoc %>% 
+  filter(Pheno == "IQ/DQ") %>% 
+  nest(data = -lipid) %>% 
+  mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + PC1_diet_pe + PC2_diet_pe + PC3_diet_pe + iq_dq_wisccomp_mselnv_nih, data = .)), tidied = purrr::map(model, tidy)) %>%
+#  mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + protein + cholesterol + satfats + polyfats + monofats + carbohydrate + iq_dq_wisccomp_mselnv_nih, data = .)), tidied = purrr::map(model, tidy)) %>%
+  unnest(tidied) %>% 
+  dplyr::select(-c("data", "model")) %>%
+  group_by(lipid) %>%
+  dplyr::summarise(lipid = lipid, term = term, sumsq_prop = sumsq/sum(sumsq)) %>%
+  pivot_wider(names_from = "term", values_from = "sumsq_prop") %>%
+  mutate(Pheno = "IQ/DQ")
+colnames(tmp_neurodev_iqdq_stats)[which(colnames(tmp_neurodev_iqdq_stats) == "iq_dq_wisccomp_mselnv_nih")] <- "trait"
+
+tmp_neurodev_sleep_stats <- lipids_pgs.long.assoc %>% 
+  filter(Pheno == "Sleep (CSHQ)") %>% 
+  nest(data = -lipid) %>% 
+  mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + PC1_diet_pe + PC2_diet_pe + PC3_diet_pe + sleep_cshq_total, data = .)), tidied = purrr::map(model, tidy)) %>%
+#  mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + protein + cholesterol + satfats + polyfats + monofats + carbohydrate + sleep_cshq_total, data = .)), tidied = purrr::map(model, tidy)) %>%
+  unnest(tidied) %>% 
+  dplyr::select(-c("data", "model")) %>%
+  group_by(lipid) %>%
+  dplyr::summarise(lipid = lipid, term = term, sumsq_prop = sumsq/sum(sumsq)) %>%
+  pivot_wider(names_from = "term", values_from = "sumsq_prop") %>%
+  mutate(Pheno = "Sleep (CSHQ)")
+colnames(tmp_neurodev_sleep_stats)[which(colnames(tmp_neurodev_sleep_stats) == "sleep_cshq_total")] <- "trait"
+
+lipids_pgs_r2_agesex_batch_diet_neurodev <- rbind(tmp_neurodev_asd_stats, tmp_neurodev_iqdq_stats, tmp_neurodev_sleep_stats)
+
+# Add lipid names
+if (datan == "lipid_species") {
+  tmp <- data.frame(lipid = anno$Lipid.species_header, lipid_name = anno$Lipid.species)
+} else if (datan == "lipid_class") {
+  tmp <- data.frame(lipid = anno_class$Lipid.species_header, lipid_name = anno_class$Lipid.species)
+}
+lipids_pgs_r2_agesex_batch_diet_neurodev <- inner_join(lipids_pgs_r2_agesex_batch_diet_neurodev, tmp, by = "lipid")
+
+```
+
+## Differences between models
+
+### Lipid species ~ PGS + agesex + ASD
+
+```{r}
+
+lipids_pgs_r2_agesex_asd.diff <- lipids_pgs_r2_agesex_asd %>% 
+  mutate(lipid = lipid) %>%
+  mutate(lipid_name = lipid_name) %>%
+  mutate(pgs = lipid_PGS_EUR) %>%
+  mutate(add_agesex = age + age2 + sex) %>%
+  mutate(add_ASD = ASD) %>%
+  mutate(total = pgs + add_agesex + add_ASD) %>%
+  dplyr::select(c("lipid", "lipid_name", "pgs", "add_agesex", "add_ASD", "total"))
+
+datatable(lipids_pgs_r2_agesex_asd.diff %>% arrange(desc(total)) %>% mutate_if(is.numeric, ~signif(., 3)))
+
+```
+
+```{r}
+
+lipids_pgs_r2_agesex_neurodev.diff <- lipids_pgs_r2_agesex_neurodev %>% 
+  mutate(lipid = lipid) %>%
+  mutate(lipid_name = lipid_name) %>%
+  mutate(pgs = lipid_PGS_EUR) %>%
+  mutate(add_agesex = age + age2 + sex) %>%
+  mutate(add_trait = trait) %>%
+  mutate(total = pgs + add_agesex + add_trait) %>%
+  dplyr::select(c("lipid", "lipid_name", "Pheno", "pgs", "add_agesex", "add_trait", "total"))
+
+datatable(lipids_pgs_r2_agesex_neurodev.diff %>% arrange(desc(total)) %>% mutate_if(is.numeric, ~signif(., 3)))
+
+```
+
+### Lipid species ~ PGS + agesex + batch + ASD
+
+```{r}
+
+lipids_pgs_r2_agesex_batch_asd.diff <- lipids_pgs_r2_agesex_batch_asd %>% 
+  mutate(lipid = lipid) %>%
+  mutate(lipid_name = lipid_name) %>%
+  mutate(pgs = lipid_PGS_EUR) %>%
+  mutate(add_agesex = age + age2 + sex) %>%
+  mutate(add_batch = `as.factor(Batch)` + InjectionOrder) %>% 
+  mutate(add_ASD = ASD) %>%
+  mutate(total = pgs + add_agesex + add_batch + add_ASD) %>%
+  dplyr::select(c("lipid", "lipid_name", "pgs", "add_agesex", "add_batch", "add_ASD", "total"))
+
+datatable(lipids_pgs_r2_agesex_batch_asd.diff %>% arrange(desc(total)) %>% mutate_if(is.numeric, ~signif(., 3)))
+
+```
+
+```{r}
+
+lipids_pgs_r2_agesex_batch_neurodev.diff <- lipids_pgs_r2_agesex_batch_neurodev %>% 
+  mutate(lipid = lipid) %>%
+  mutate(lipid_name = lipid_name) %>%
+  mutate(pgs = lipid_PGS_EUR) %>%
+  mutate(add_agesex = age + age2 + sex) %>%
+  mutate(add_batch = `as.factor(Batch)` + InjectionOrder) %>% 
+  mutate(add_trait = trait) %>%
+  mutate(total = pgs + add_agesex + add_batch + add_trait) %>%
+  dplyr::select(c("lipid", "lipid_name", "Pheno", "pgs", "add_agesex", "add_batch", "add_trait", "total"))
+
+datatable(lipids_pgs_r2_agesex_batch_neurodev.diff %>% arrange(desc(total)) %>% mutate_if(is.numeric, ~signif(., 3)))
+
+```
+
+### Lipid species ~ PGS + agesex + batch + time + ASD
+
+```{r}
+
+lipids_pgs_r2_agesex_batchtime_asd.diff <- lipids_pgs_r2_agesex_batchtime_asd %>% 
+  mutate(lipid = lipid) %>%
+  mutate(lipid_name = lipid_name) %>%
+  mutate(pgs = lipid_PGS_EUR) %>%
+  mutate(add_agesex = age + age2 + sex) %>%
+  mutate(add_batch = `as.factor(Batch)` + InjectionOrder) %>% 
+  mutate(add_time = collection_blood_time_cos) %>%
+  mutate(add_ASD = ASD) %>%
+  mutate(total = pgs + add_agesex + add_batch + add_time + add_ASD) %>%
+  dplyr::select(c("lipid", "lipid_name", "pgs", "add_agesex", "add_batch", "add_time", "add_ASD", "total"))
+
+datatable(lipids_pgs_r2_agesex_batchtime_asd.diff %>% arrange(desc(total)) %>% mutate_if(is.numeric, ~signif(., 3)))
+
+```
+
+```{r}
+
+lipids_pgs_r2_agesex_batchtime_neurodev.diff <- lipids_pgs_r2_agesex_batchtime_neurodev %>% 
+  mutate(lipid = lipid) %>%
+  mutate(lipid_name = lipid_name) %>%
+  mutate(pgs = lipid_PGS_EUR) %>%
+  mutate(add_agesex = age + age2 + sex) %>%
+  mutate(add_batch = `as.factor(Batch)` + InjectionOrder) %>% 
+  mutate(add_time = collection_blood_time_cos) %>%
+  mutate(add_trait = trait) %>%
+  mutate(total = pgs + add_agesex + add_batch + add_time + add_trait) %>%
+  dplyr::select(c("lipid", "lipid_name", "Pheno", "pgs", "add_agesex", "add_batch", "add_time", "add_trait", "total"))
+
+datatable(lipids_pgs_r2_agesex_batchtime_neurodev.diff %>% arrange(desc(total)) %>% mutate_if(is.numeric, ~signif(., 3)))
+
+```
+
+### Lipid species ~ PGS + agesex + diet + ASD
+
+```{r}
+
+lipids_pgs_r2_agesex_batch_diet_asd.diff <- lipids_pgs_r2_agesex_batch_diet_asd %>% 
+  mutate(lipid = lipid) %>%
+  mutate(lipid_name = lipid_name) %>%
+  mutate(pgs = lipid_PGS_EUR) %>%
+  mutate(add_agesex = age + age2 + sex) %>%
+  mutate(add_batch = `as.factor(Batch)` + InjectionOrder) %>% 
+  mutate(add_diet = PC1_diet_pe + PC2_diet_pe + PC3_diet_pe) %>% 
+#  mutate(add_diet = protein + cholesterol + satfats + polyfats + monofats + carbohydrate) %>% 
+  mutate(add_ASD = ASD) %>%
+  mutate(total = pgs + add_agesex + + add_batch + add_diet + add_ASD) %>%
+  dplyr::select(c("lipid", "lipid_name", "pgs", "add_agesex", "add_batch", "add_diet", "add_ASD", "total"))
+
+datatable(lipids_pgs_r2_agesex_batch_diet_asd.diff %>% arrange(desc(total)) %>% mutate_if(is.numeric, ~signif(., 3)))
+
+```
+
+```{r}
+
+lipids_pgs_r2_agesex_batch_diet_neurodev.diff <- lipids_pgs_r2_agesex_batch_diet_neurodev %>% 
+  mutate(lipid = lipid) %>%
+  mutate(lipid_name = lipid_name) %>%
+  mutate(pgs = lipid_PGS_EUR) %>%
+  mutate(add_agesex = age + age2 + sex) %>%
+  mutate(add_batch = `as.factor(Batch)` + InjectionOrder) %>% 
+  mutate(add_diet = PC1_diet_pe + PC2_diet_pe + PC3_diet_pe) %>% 
+#  mutate(add_diet = protein + cholesterol + satfats + polyfats + monofats + carbohydrate) %>% 
+  mutate(add_trait = trait) %>%
+  mutate(total = pgs + add_agesex + add_batch + add_diet + add_trait) %>%
+  dplyr::select(c("lipid", "lipid_name", "Pheno", "pgs", "add_agesex", "add_batch", "add_diet", "add_trait", "total"))
+
+datatable(lipids_pgs_r2_agesex_batch_diet_neurodev.diff %>% arrange(desc(total)) %>% mutate_if(is.numeric, ~signif(., 3)))
+
+```
+
+## Plots
+
+```{r,echo=FALSE}
+len <- ncol(lipids_pgs_eur)*0.1
+```
+
+### Lipid species ~ PGS + agesex + ASD
+
+```{r, fig.height = len, fig.width = 8}
+
+lipids_pgs_r2_agesex_asd.diff.long <- melt(lipids_pgs_r2_agesex_asd.diff, id.var = c("lipid", "lipid_name", "total"), variable.name = "model", value.name = "R2") %>% filter(!is.na(R2))
+lipids_pgs_r2_agesex_asd.diff.long$lipid <- as.character(lipids_pgs_r2_agesex_asd.diff.long$lipid)
+lipids_pgs_r2_agesex_asd.diff.long$lipid_name <- as.character(lipids_pgs_r2_agesex_asd.diff.long$lipid_name)
+lipids_pgs_r2_agesex_asd.diff.long$model <- as.character(lipids_pgs_r2_agesex_asd.diff.long$model)
+
+# Add phenotype that lipids are associated with
+lipids_pgs_r2_agesex_asd.diff.long <- inner_join(lipids_pgs_r2_agesex_asd.diff.long, assoc_sig_results_pheno, by = "lipid")
+
+# Plot: ordered by PGS R2
+data_order <- lipids_pgs_r2_agesex_asd.diff.long %>% filter(model == "pgs") %>% dplyr::arrange(desc(R2)) %>% pull(lipid_name)
+lipids_pgs_r2_agesex_asd.diff.long$MatchLipid <- match(lipids_pgs_r2_agesex_asd.diff.long$lipid_name, data_order)
+analysis_order <- rev(unique(lipids_pgs_r2_agesex_asd.diff.long$model))
+lipids_pgs_r2_agesex_asd.diff.long$MatchModel <- match(lipids_pgs_r2_agesex_asd.diff.long$model, analysis_order)
+
+lipids_pgs_r2_agesex_asd.diff.long %>% mutate(model = fct_reorder(model, MatchModel)) %>% mutate(lipid_name = fct_reorder(lipid_name, MatchLipid)) %>% 
+  filter(model %in% c("pgs", "add_agesex", "add_ASD")) %>%
+  ggplot(aes(x = lipid_name, y = R2, fill = model)) + 
+  geom_bar(position="stack", stat="identity") + 
+  scale_fill_manual(values = wes_palette(name = "Zissou1", 6, type = "continuous")[c(6,1,3)], name = "") +
+  coord_flip() + 
+  theme(legend.position = "bottom") + 
+  facet_grid(cols = vars(Pheno), scales = "free_x", space = "free_x")
+
+# Plot: ordered by add_group R2
+# - add facet for phenotype
+data_order <- lipids_pgs_r2_agesex_asd.diff.long %>% filter(model == "add_group") %>% arrange(desc(R2)) %>% pull(lipid_name)
+lipids_pgs_r2_agesex_asd.diff.long$MatchLipid <- match(lipids_pgs_r2_agesex_asd.diff.long$lipid_name, data_order)
+analysis_order <- unique(lipids_pgs_r2_agesex_asd.diff.long$model)
+lipids_pgs_r2_agesex_asd.diff.long$MatchModel <- match(lipids_pgs_r2_agesex_asd.diff.long$model, analysis_order)
+
+lipids_pgs_r2_agesex_asd.diff.long %>% mutate(model = fct_reorder(model, MatchModel)) %>% mutate(lipid_name = fct_reorder(lipid_name, MatchLipid)) %>% 
+  filter(model %in% c("pgs", "add_agesex", "add_ASD")) %>%
+  ggplot(aes(x = lipid_name, y = R2, fill = model)) + 
+  geom_bar(position="stack", stat="identity") + 
+  scale_fill_manual(values = wes_palette(name = "Zissou1", 6, type = "continuous")[c(6,1,3)], name = "") +
+  coord_flip() + 
+  theme(legend.position = "bottom") + 
+  facet_grid(cols = vars(Pheno), scales = "free_x", space = "free_x")
+
+# Plot: ordered by group
+data_order <- unique(lipids_pgs_r2_agesex_asd.diff.long %>% arrange(desc(total)) %>% pull(lipid_name))
+lipids_pgs_r2_agesex_asd.diff.long$MatchLipid <- match(lipids_pgs_r2_agesex_asd.diff.long$lipid_name, data_order)
+analysis_order <- rev(unique(lipids_pgs_r2_agesex_asd.diff.long$model))
+lipids_pgs_r2_agesex_asd.diff.long$MatchModel <- match(lipids_pgs_r2_agesex_asd.diff.long$model, analysis_order)
+
+lipids_pgs_r2_agesex_asd.diff.long %>% mutate(model = fct_reorder(model, MatchModel)) %>% mutate(lipid_name = fct_reorder(lipid_name, MatchLipid)) %>% 
+  filter(model %in% c("pgs", "add_agesex", "add_ASD")) %>%
+  filter(Pheno %in% c("age", "Tanner (genital)", "BMI", "sex")) %>% ##### added
+  ggplot(aes(x = lipid_name, y = R2, fill = model)) + 
+  geom_bar(position="stack", stat="identity") + 
+  scale_fill_manual(values = wes_palette(name = "Zissou1", 6, type = "continuous")[c(6,1,3)], name = "") +
+  coord_flip() + 
+  theme(legend.position = "bottom") + 
+  xlab("lipid") + ylab(expression(R^"2")) +
+  facet_grid(cols = vars(Pheno), scales = "free_x", space = "free_x")
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/variance/R2_pgs_agesex_group_agetannerbmisex.svg", height = 16, width = 10)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/variance/R2_pgs_agesex_group_agetannerbmisex.png", height = 16, width = 10)
+
+lipids_pgs_r2_agesex_asd.diff.long %>% mutate(model = fct_reorder(model, MatchModel)) %>% mutate(lipid_name = fct_reorder(lipid_name, MatchLipid)) %>% 
+  filter(model %in% c("pgs", "add_agesex", "add_ASD")) %>%
+  filter(Pheno %in% c("age", "Tanner (genital)", "BMI", "sex")) %>% ##### added
+  ggplot(aes(x = lipid_name, y = R2, fill = model)) + 
+  geom_bar(position="stack", stat="identity") + 
+  scale_fill_manual(values = wes_palette(name = "Zissou1", 6, type = "continuous")[c(6,1,3)], name = "") +
+  coord_flip() + 
+  theme_bw() +
+  theme(legend.position = "bottom") + 
+  xlab("lipid") + ylab(expression(R^"2")) +
+  facet_grid(cols = vars(Pheno), scales = "free_x", space = "free_x")
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/variance/R2_pgs_agesex_group_agetannerbmisex.svg", height = 19, width = 12)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/variance/R2_pgs_agesex_group_agetannerbmisex.png", height = 19, width = 12)
+
+```
+
+```{r}
+
+lipids_pgs_r2_agesex_neurodev.diff.long <- melt(lipids_pgs_r2_agesex_neurodev.diff, id.var = c("lipid", "lipid_name", "total", "Pheno"), variable.name = "model", value.name = "R2") %>% filter(!is.na(R2))
+lipids_pgs_r2_agesex_neurodev.diff.long$lipid <- as.character(lipids_pgs_r2_agesex_neurodev.diff.long$lipid)
+lipids_pgs_r2_agesex_neurodev.diff.long$lipid_name <- as.character(lipids_pgs_r2_agesex_neurodev.diff.long$lipid_name)
+lipids_pgs_r2_agesex_neurodev.diff.long$model <- as.character(lipids_pgs_r2_agesex_neurodev.diff.long$model)
+
+# Add phenotype that lipids are associated with
+#lipids_pgs_r2_agesex_neurodev.diff.long <- inner_join(lipids_pgs_r2_agesex_neurodev.diff.long, by = "lipid")
+
+# - neurodev phenotypes
+data_order <- unique(lipids_pgs_r2_agesex_neurodev.diff.long %>% dplyr::arrange(desc(total)) %>% pull(lipid_name))
+lipids_pgs_r2_agesex_neurodev.diff.long$MatchLipid <- match(lipids_pgs_r2_agesex_neurodev.diff.long$lipid_name, data_order)
+analysis_order <- rev(unique(lipids_pgs_r2_agesex_neurodev.diff.long$model))
+lipids_pgs_r2_agesex_neurodev.diff.long$MatchModel <- match(lipids_pgs_r2_agesex_neurodev.diff.long$model, analysis_order)
+lipids_pgs_r2_agesex_asd.diff_neurodev.long <- left_join(lipids_pgs_r2_agesex_neurodev.diff.long, anno %>% mutate(lipid = Lipid.species_header))
+
+lipids_pgs_r2_agesex_asd.diff_neurodev.long %>% mutate(model = fct_reorder(model, MatchModel)) %>% mutate(lipid_name = fct_reorder(lipid_name, MatchLipid)) %>% dplyr::arrange(desc(R2)) %>%
+  filter(model %in% c("pgs", "add_agesex", "add_trait")) %>%
+  filter(!Pheno %in% c("age", "Tanner (genital)")) %>%
+  ggplot(aes(x = lipid_name, y = R2, fill = model)) + 
+  geom_bar(position="stack", stat="identity") + 
+  scale_fill_manual(values = wes_palette(name = "Zissou1", 6, type = "continuous")[c(6,1,3)], name = "") +
+  #coord_flip() + 
+  theme_bw() + theme(legend.position = "bottom", strip.text.y = element_text(size = 6.5), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + 
+  xlab("lipid") + ylab(expression(R^"2")) +
+  facet_grid(~ Pheno, scales = "free_x", space = "free_x")
+
+lipids_pgs_r2_agesex_asd.diff_neurodev.long %>% mutate(model = fct_reorder(model, MatchModel)) %>%
+  filter(model %in% c("pgs", "add_agesex", "add_trait")) %>%
+  filter(!Pheno %in% c("age", "Tanner (genital)")) %>%
+  ggplot(aes(x = lipid_name, y = R2, fill = model)) + 
+  geom_bar(position="stack", stat="identity") + 
+  scale_fill_manual(values = wes_palette(name = "Zissou1", 6, type = "continuous")[c(6,1,3)], name = "") +
+  #coord_flip() + 
+  theme_bw() + theme(text = element_text(size = 15), strip.text.y = element_text(size = 6.5), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + 
+  xlab("Lipid species") + ylab(expression(R^"2")) +
+  facet_grid(~ Pheno, scales = "free_x", space = "free_x")
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/variance/R2_pgs_agesex_trait_neurodev.svg", height = 4, width = 10)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/variance/R2_pgs_agesex_trait_neurodev.png", height = 4, width = 10)
+
+```
+
+### Lipid species ~ PGS + agesex + batch + ASD
+
+```{r, fig.height = len, fig.width = 8}
+
+lipids_pgs_r2_agesex_batch_asd.diff.long <- melt(lipids_pgs_r2_agesex_batch_asd.diff, id.var = c("lipid", "lipid_name", "total"), variable.name = "model", value.name = "R2")
+lipids_pgs_r2_agesex_batch_asd.diff.long$lipid <- as.character(lipids_pgs_r2_agesex_batch_asd.diff.long$lipid)
+lipids_pgs_r2_agesex_batch_asd.diff.long$lipid_name <- as.character(lipids_pgs_r2_agesex_batch_asd.diff.long$lipid_name)
+lipids_pgs_r2_agesex_batch_asd.diff.long$model <- as.character(lipids_pgs_r2_agesex_batch_asd.diff.long$model)
+
+# Add phenotype that lipids are associated with
+lipids_pgs_r2_agesex_batch_asd.diff.long <- inner_join(lipids_pgs_r2_agesex_batch_asd.diff.long, assoc_sig_results_pheno, by = "lipid")
+
+# Plot: ordered by PGS R2
+data_order <- lipids_pgs_r2_agesex_batch_asd.diff.long %>% filter(model == "pgs") %>% arrange(desc(R2)) %>% pull(lipid_name)
+lipids_pgs_r2_agesex_batch_asd.diff.long$MatchLipid <- match(lipids_pgs_r2_agesex_batch_asd.diff.long$lipid_name, data_order)
+analysis_order <- rev(unique(lipids_pgs_r2_agesex_batch_asd.diff.long$model))
+lipids_pgs_r2_agesex_batch_asd.diff.long$MatchModel <- match(lipids_pgs_r2_agesex_batch_asd.diff.long$model, analysis_order)
+
+lipids_pgs_r2_agesex_batch_asd.diff.long %>% mutate(model = fct_reorder(model, MatchModel)) %>% mutate(lipid_name = fct_reorder(lipid_name, MatchLipid)) %>% 
+  filter(model %in% c("pgs", "add_agesex", "add_batch", "add_ASD")) %>%
+  ggplot(aes(x = lipid_name, y = R2, fill = model)) + 
+  geom_bar(position="stack", stat="identity") + 
+  scale_fill_manual(values = wes_palette(name = "Zissou1", 6, type = "continuous")[c(6,4,1,3)], name = "") +
+  coord_flip() + 
+  theme(legend.position = "bottom") + 
+  facet_grid(cols = vars(Pheno), scales = "free_x", space = "free_x")
+
+# Plot: ordered by add_group R2
+data_order <- lipids_pgs_r2_agesex_batch_asd.diff.long %>% filter(model == "add_ASD") %>% arrange(desc(R2)) %>% pull(lipid_name)
+lipids_pgs_r2_agesex_batch_asd.diff.long$MatchLipid <- match(lipids_pgs_r2_agesex_batch_asd.diff.long$lipid_name, data_order)
+analysis_order <- unique(lipids_pgs_r2_agesex_batch_asd.diff.long$model)
+lipids_pgs_r2_agesex_batch_asd.diff.long$MatchModel <- match(lipids_pgs_r2_agesex_batch_asd.diff.long$model, analysis_order)
+
+lipids_pgs_r2_agesex_batch_asd.diff.long %>% mutate(model = fct_reorder(model, MatchModel)) %>% mutate(lipid_name = fct_reorder(lipid_name, MatchLipid)) %>% 
+  filter(model %in% c("pgs", "add_agesex", "add_batch", "add_ASD")) %>%
+  ggplot(aes(x = lipid_name, y = R2, fill = model)) + 
+  geom_bar(position="stack", stat="identity") + 
+  scale_fill_manual(values = wes_palette(name = "Zissou1", 6, type = "continuous")[c(6,4,1,3)], name = "") +
+  coord_flip() + 
+  theme(legend.position = "bottom") + 
+  facet_grid(cols = vars(Pheno), scales = "free_x", space = "free_x")
+
+# Plot: ordered by total R2
+data_order <- unique(lipids_pgs_r2_agesex_batch_asd.diff.long %>% arrange(desc(total)) %>% pull(lipid_name))
+lipids_pgs_r2_agesex_batch_asd.diff.long$MatchLipid <- match(lipids_pgs_r2_agesex_batch_asd.diff.long$lipid_name, data_order)
+analysis_order <- rev(unique(lipids_pgs_r2_agesex_batch_asd.diff.long$model))
+lipids_pgs_r2_agesex_batch_asd.diff.long$MatchModel <- match(lipids_pgs_r2_agesex_batch_asd.diff.long$model, analysis_order)
+
+lipids_pgs_r2_agesex_batch_asd.diff.long %>% mutate(model = fct_reorder(model, MatchModel)) %>% mutate(lipid_name = fct_reorder(lipid_name, MatchLipid)) %>% 
+  filter(model %in% c("pgs", "add_agesex", "add_batch", "add_ASD")) %>%
+  filter(Pheno %in% c("age", "Tanner (genital)", "BMI", "sex")) %>% ##### added
+  ggplot(aes(x = lipid_name, y = R2, fill = model)) + 
+  geom_bar(position="stack", stat="identity") + 
+  scale_fill_manual(values = wes_palette(name = "Zissou1", 6, type = "continuous")[c(6,4,1,3)], name = "") +
+  coord_flip() + 
+  xlab("lipid") + ylab(expression(R^"2")) +
+  theme_bw() +
+  theme(legend.position = "bottom") + 
+  facet_grid(cols = vars(Pheno), scales = "free_x", space = "free_x")
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/variance/R2_pgs_agesex_group_batch_agetannerbmisex.svg", height = 19, width = 12)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/variance/R2_pgs_agesex_group_batch_agetannerbmisex.png", height = 19, width = 12)
+
+```
+
+
+```{r}
+
+lipids_pgs_r2_agesex_batch_neurodev.diff <- melt(lipids_pgs_r2_agesex_batch_neurodev.diff, id.var = c("lipid", "lipid_name", "total", "Pheno"), variable.name = "model", value.name = "R2") %>% filter(!is.na(R2))
+lipids_pgs_r2_agesex_batch_neurodev.diff$lipid <- as.character(lipids_pgs_r2_agesex_batch_neurodev.diff$lipid)
+lipids_pgs_r2_agesex_batch_neurodev.diff$lipid_name <- as.character(lipids_pgs_r2_agesex_batch_neurodev.diff$lipid_name)
+lipids_pgs_r2_agesex_batch_neurodev.diff$model <- as.character(lipids_pgs_r2_agesex_batch_neurodev.diff$model)
+
+# Add phenotype that lipids are associated with
+#lipids_pgs_r2_agesex_neurodev.diff.long <- inner_join(lipids_pgs_r2_agesex_neurodev.diff.long, by = "lipid")
+
+# - neurodev phenotypes
+data_order <- unique(lipids_pgs_r2_agesex_batch_neurodev.diff %>% dplyr::arrange(desc(total)) %>% pull(lipid_name))
+lipids_pgs_r2_agesex_batch_neurodev.diff$MatchLipid <- match(lipids_pgs_r2_agesex_batch_neurodev.diff$lipid_name, data_order)
+analysis_order <- rev(unique(lipids_pgs_r2_agesex_batch_neurodev.diff$model))
+lipids_pgs_r2_agesex_batch_neurodev.diff$MatchModel <- match(lipids_pgs_r2_agesex_batch_neurodev.diff$model, analysis_order)
+lipids_pgs_r2_agesex_batch_neurodev.diff.long <- left_join(lipids_pgs_r2_agesex_batch_neurodev.diff, anno %>% mutate(lipid = Lipid.species_header))
+
+lipids_pgs_r2_agesex_batch_neurodev.diff.long %>% mutate(model = fct_reorder(model, MatchModel)) %>%
+  filter(model %in% c("pgs", "add_agesex", "add_batch", "add_trait")) %>%
+  filter(!Pheno %in% c("age", "Tanner (genital)")) %>%
+  ggplot(aes(x = lipid_name, y = R2, fill = model)) + 
+  geom_bar(position="stack", stat="identity") + 
+  scale_fill_manual(values = wes_palette(name = "Zissou1", 6, type = "continuous")[c(6,4,1,3)], name = "") +
+  #coord_flip() + 
+  theme_bw() + theme(strip.text.y = element_text(size = 6.5), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + 
+  xlab("Lipid species") + ylab(expression(R^"2")) +
+  facet_grid(~ Pheno, scales = "free_x", space = "free_x")
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/variance/R2_pgs_agesex_trait_batch_neurodev.svg", height = 4, width = 10)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/variance/R2_pgs_agesex_trait_batch_neurodev.png", height = 4, width = 10)
+
+```
+
+### Lipid species ~ PGS + agesex + batch + time + ASD
+
+```{r, fig.height = len, fig.width = 8}
+
+lipids_pgs_r2_agesex_batchtime_asd.diff.long <- melt(lipids_pgs_r2_agesex_batchtime_asd.diff, id.var = c("lipid", "lipid_name", "total"), variable.name = "model", value.name = "R2")
+lipids_pgs_r2_agesex_batchtime_asd.diff.long$lipid <- as.character(lipids_pgs_r2_agesex_batchtime_asd.diff.long$lipid)
+lipids_pgs_r2_agesex_batchtime_asd.diff.long$lipid_name <- as.character(lipids_pgs_r2_agesex_batchtime_asd.diff.long$lipid_name)
+lipids_pgs_r2_agesex_batchtime_asd.diff.long$model <- as.character(lipids_pgs_r2_agesex_batchtime_asd.diff.long$model)
+
+# Add phenotype that lipids are associated with
+lipids_pgs_r2_agesex_batchtime_asd.diff.long <- inner_join(lipids_pgs_r2_agesex_batchtime_asd.diff.long, assoc_sig_results_pheno, by = "lipid")
+
+# Plot: ordered by PGS R2
+data_order <- lipids_pgs_r2_agesex_batchtime_asd.diff.long %>% filter(model == "pgs") %>% arrange(desc(R2)) %>% pull(lipid_name)
+lipids_pgs_r2_agesex_batchtime_asd.diff.long$MatchLipid <- match(lipids_pgs_r2_agesex_batchtime_asd.diff.long$lipid_name, data_order)
+analysis_order <- rev(unique(lipids_pgs_r2_agesex_batchtime_asd.diff.long$model))
+lipids_pgs_r2_agesex_batchtime_asd.diff.long$MatchModel <- match(lipids_pgs_r2_agesex_batchtime_asd.diff.long$model, analysis_order)
+
+lipids_pgs_r2_agesex_batchtime_asd.diff.long %>% mutate(model = fct_reorder(model, MatchModel)) %>% mutate(lipid_name = fct_reorder(lipid_name, MatchLipid)) %>% 
+  filter(model %in% c("pgs", "add_agesex", "add_batch", "add_time", "add_ASD")) %>%
+  ggplot(aes(x = lipid_name, y = R2, fill = model)) + 
+  geom_bar(position="stack", stat="identity") + 
+  scale_fill_manual(values = wes_palette(name = "Zissou1", 6, type = "continuous")[c(6,5,4,1,3)], name = "") +
+  coord_flip() + 
+  theme(legend.position = "bottom") + 
+  facet_grid(cols = vars(Pheno), scales = "free_x", space = "free_x")
+
+# Plot: ordered by add_group R2
+data_order <- lipids_pgs_r2_agesex_batchtime_asd.diff.long %>% filter(model == "add_ASD") %>% arrange(desc(R2)) %>% pull(lipid_name)
+lipids_pgs_r2_agesex_batchtime_asd.diff.long$MatchLipid <- match(lipids_pgs_r2_agesex_batchtime_asd.diff.long$lipid_name, data_order)
+analysis_order <- unique(lipids_pgs_r2_agesex_batchtime_asd.diff.long$model)
+lipids_pgs_r2_agesex_batchtime_asd.diff.long$MatchModel <- match(lipids_pgs_r2_agesex_batchtime_asd.diff.long$model, analysis_order)
+
+lipids_pgs_r2_agesex_batchtime_asd.diff.long %>% mutate(model = fct_reorder(model, MatchModel)) %>% mutate(lipid_name = fct_reorder(lipid_name, MatchLipid)) %>% 
+  filter(model %in% c("pgs", "add_agesex", "add_batch", "add_time", "add_ASD")) %>%
+  ggplot(aes(x = lipid_name, y = R2, fill = model)) + 
+  geom_bar(position="stack", stat="identity") + 
+  scale_fill_manual(values = wes_palette(name = "Zissou1", 6, type = "continuous")[c(6,5,4,1,3)], name = "") +
+  coord_flip() + 
+  theme(legend.position = "bottom") + 
+  facet_grid(cols = vars(Pheno), scales = "free_x", space = "free_x")
+
+# Plot: ordered by total R2
+data_order <- unique(lipids_pgs_r2_agesex_batchtime_asd.diff.long %>% arrange(desc(total)) %>% pull(lipid_name))
+lipids_pgs_r2_agesex_batchtime_asd.diff.long$MatchLipid <- match(lipids_pgs_r2_agesex_batchtime_asd.diff.long$lipid_name, data_order)
+analysis_order <- rev(unique(lipids_pgs_r2_agesex_batchtime_asd.diff.long$model))
+lipids_pgs_r2_agesex_batchtime_asd.diff.long$MatchModel <- match(lipids_pgs_r2_agesex_batchtime_asd.diff.long$model, analysis_order)
+
+lipids_pgs_r2_agesex_batchtime_asd.diff.long %>% mutate(model = fct_reorder(model, MatchModel)) %>% mutate(lipid_name = fct_reorder(lipid_name, MatchLipid)) %>% 
+  filter(model %in% c("pgs", "add_agesex", "add_batch", "add_time", "add_ASD")) %>%
+  filter(Pheno %in% c("age", "Tanner (genital)", "BMI", "sex")) %>% ##### added
+  ggplot(aes(x = lipid_name, y = R2, fill = model)) + 
+  geom_bar(position="stack", stat="identity") + 
+  scale_fill_manual(values = wes_palette(name = "Zissou1", 6, type = "continuous")[c(6,5,4,1,3)], name = "") +
+  coord_flip() + 
+  xlab("lipid") + ylab(expression(R^"2")) +
+  theme_bw() +
+  theme(legend.position = "bottom") + 
+  facet_grid(cols = vars(Pheno), scales = "free_x", space = "free_x")
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/variance/R2_pgs_agesex_group_batchtime_agetannerbmisex.svg", height = 19, width = 12)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/variance/R2_pgs_agesex_group_batchtime_agetannerbmisex.png", height = 19, width = 12)
+
+```
+
+
+```{r}
+
+lipids_pgs_r2_agesex_batchtime_neurodev.diff <- melt(lipids_pgs_r2_agesex_batchtime_neurodev.diff, id.var = c("lipid", "lipid_name", "total", "Pheno"), variable.name = "model", value.name = "R2") %>% filter(!is.na(R2))
+lipids_pgs_r2_agesex_batchtime_neurodev.diff$lipid <- as.character(lipids_pgs_r2_agesex_batchtime_neurodev.diff$lipid)
+lipids_pgs_r2_agesex_batchtime_neurodev.diff$lipid_name <- as.character(lipids_pgs_r2_agesex_batchtime_neurodev.diff$lipid_name)
+lipids_pgs_r2_agesex_batchtime_neurodev.diff$model <- as.character(lipids_pgs_r2_agesex_batchtime_neurodev.diff$model)
+
+# Add phenotype that lipids are associated with
+#lipids_pgs_r2_agesex_neurodev.diff.long <- inner_join(lipids_pgs_r2_agesex_neurodev.diff.long, by = "lipid")
+
+# - neurodev phenotypes
+data_order <- unique(lipids_pgs_r2_agesex_batchtime_neurodev.diff %>% pull(lipid_name))
+lipids_pgs_r2_agesex_batchtime_neurodev.diff$MatchLipid <- match(lipids_pgs_r2_agesex_batchtime_neurodev.diff$lipid_name, data_order)
+analysis_order <- rev(unique(lipids_pgs_r2_agesex_batchtime_neurodev.diff$model))
+lipids_pgs_r2_agesex_batchtime_neurodev.diff$MatchModel <- match(lipids_pgs_r2_agesex_batchtime_neurodev.diff$model, analysis_order)
+lipids_pgs_r2_agesex_batchtime_neurodev.diff <- left_join(lipids_pgs_r2_agesex_batchtime_neurodev.diff, anno %>% mutate(lipid = Lipid.species_header))
+
+lipids_pgs_r2_agesex_batchtime_neurodev.diff %>% mutate(model = fct_reorder(model, MatchModel)) %>%
+  filter(model %in% c("pgs", "add_agesex", "add_batch", "add_time", "add_trait")) %>%
+  filter(!Pheno %in% c("age", "Tanner (genital)")) %>%
+  ggplot(aes(x = lipid_name, y = R2, fill = model)) + 
+  geom_bar(position="stack", stat="identity") + 
+  scale_fill_manual(values = wes_palette(name = "Zissou1", 6, type = "continuous")[c(6,5,4,1,3)], name = "") +
+  #coord_flip() + 
+  theme_bw() + theme(strip.text.y = element_text(size = 6.5), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + 
+  xlab("Lipid species") + ylab(expression(R^"2")) +
+  facet_grid(~ Pheno, scales = "free_x", space = "free_x")
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/variance/R2_pgs_agesex_trait_batchtime_neurodev.svg", height = 4, width = 10)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/variance/R2_pgs_agesex_trait_batchtime_neurodev.png", height = 4, width = 10)
+
+```
+
+### Lipid species ~ PGS + agesex + batch + diet + ASD
+
+```{r, fig.height = len, fig.width = 8}
+
+lipids_pgs_r2_agesex_batch_diet_asd.diff.long <- melt(lipids_pgs_r2_agesex_batch_diet_asd.diff, id.var = c("lipid", "lipid_name", "total"), variable.name = "model", value.name = "R2")
+lipids_pgs_r2_agesex_batch_diet_asd.diff.long$lipid <- as.character(lipids_pgs_r2_agesex_batch_diet_asd.diff.long$lipid)
+lipids_pgs_r2_agesex_batch_diet_asd.diff.long$lipid_name <- as.character(lipids_pgs_r2_agesex_batch_diet_asd.diff.long$lipid_name)
+lipids_pgs_r2_agesex_batch_diet_asd.diff.long$model <- as.character(lipids_pgs_r2_agesex_batch_diet_asd.diff.long$model)
+
+# Add phenotype that lipids are associated with
+lipids_pgs_r2_agesex_batch_diet_asd.diff.long <- inner_join(lipids_pgs_r2_agesex_batch_diet_asd.diff.long, assoc_sig_results_pheno, by = "lipid")
+
+# Plot: ordered by PGS R2
+data_order <- lipids_pgs_r2_agesex_batch_diet_asd.diff.long %>% filter(model == "pgs") %>% arrange(desc(R2)) %>% pull(lipid_name)
+lipids_pgs_r2_agesex_batch_diet_asd.diff.long$MatchLipid <- match(lipids_pgs_r2_agesex_batch_diet_asd.diff.long$lipid_name, data_order)
+analysis_order <- rev(unique(lipids_pgs_r2_agesex_batch_diet_asd.diff.long$model))
+lipids_pgs_r2_agesex_batch_diet_asd.diff.long$MatchModel <- match(lipids_pgs_r2_agesex_batch_diet_asd.diff.long$model, analysis_order)
+
+lipids_pgs_r2_agesex_batch_diet_asd.diff.long %>% mutate(model = fct_reorder(model, MatchModel)) %>% mutate(lipid_name = fct_reorder(lipid_name, MatchLipid)) %>% 
+  ggplot(aes(x = lipid_name, y = R2, fill = model)) + 
+  geom_bar(position="stack", stat="identity") + 
+  scale_fill_manual(values = wes_palette(name = "Zissou1", 6, type = "continuous")[c(6,5,4,1,3)], name = "") +
+  coord_flip() + 
+  theme(legend.position = "bottom") + 
+  facet_grid(cols = vars(Pheno), scales = "free_x", space = "free_x")
+
+# Plot: ordered by add_group R2
+data_order <- lipids_pgs_r2_agesex_batch_diet_asd.diff.long %>% filter(model == "add_ASD") %>% arrange(desc(R2)) %>% pull(lipid_name)
+lipids_pgs_r2_agesex_batch_diet_asd.diff.long$MatchLipid <- match(lipids_pgs_r2_agesex_batch_diet_asd.diff.long$lipid_name, data_order)
+analysis_order <- unique(lipids_pgs_r2_agesex_batch_diet_asd.diff.long$model)
+lipids_pgs_r2_agesex_batch_diet_asd.diff.long$MatchModel <- match(lipids_pgs_r2_agesex_batch_diet_asd.diff.long$model, analysis_order)
+
+lipids_pgs_r2_agesex_batch_diet_asd.diff.long %>% mutate(model = fct_reorder(model, MatchModel)) %>% mutate(lipid_name = fct_reorder(lipid_name, MatchLipid)) %>% 
+  ggplot(aes(x = lipid_name, y = R2, fill = model)) + 
+  geom_bar(position="stack", stat="identity") + 
+  scale_fill_manual(values = wes_palette(name = "Zissou1", 6, type = "continuous")[c(6,5,4,1,3)], name = "") +
+  coord_flip() + 
+  theme(legend.position = "bottom") + 
+  facet_grid(cols = vars(Pheno), scales = "free_x", space = "free_x")
+
+# Plot: ordered by total R2
+data_order <- unique(lipids_pgs_r2_agesex_batch_diet_asd.diff.long %>% arrange(desc(total)) %>% pull(lipid_name))
+lipids_pgs_r2_agesex_batch_diet_asd.diff.long$MatchLipid <- match(lipids_pgs_r2_agesex_batch_diet_asd.diff.long$lipid_name, data_order)
+analysis_order <- rev(unique(lipids_pgs_r2_agesex_batch_diet_asd.diff.long$model))
+lipids_pgs_r2_agesex_batch_diet_asd.diff.long$MatchModel <- match(lipids_pgs_r2_agesex_batch_diet_asd.diff.long$model, analysis_order)
+
+lipids_pgs_r2_agesex_batch_diet_asd.diff.long %>% mutate(model = fct_reorder(model, MatchModel)) %>% mutate(lipid_name = fct_reorder(lipid_name, MatchLipid)) %>% 
+  filter(Pheno %in% c("age", "Tanner (genital)", "BMI", "sex")) %>% ##### added
+  ggplot(aes(x = lipid_name, y = R2, fill = model)) + 
+  geom_bar(position="stack", stat="identity") + 
+  scale_fill_manual(values = wes_palette(name = "Zissou1", 6, type = "continuous")[c(6,5,4,1,3)], name = "") +
+  coord_flip() + 
+  xlab("lipid") + ylab(expression(R^"2")) +
+  theme_bw() +
+  theme(legend.position = "bottom") + 
+  facet_grid(cols = vars(Pheno), scales = "free_x", space = "free_x")
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/variance/R2_pgs_agesex_group_diet_agetannerbmisex.svg", height = 19, width = 12)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/variance/R2_pgs_agesex_group_diet_agetannerbmisex.png", height = 19, width = 12)
+
+```
+
+```{r}
+
+lipids_pgs_r2_agesex_batch_diet_neurodev.diff <- melt(lipids_pgs_r2_agesex_batch_diet_neurodev.diff, id.var = c("lipid", "lipid_name", "total", "Pheno"), variable.name = "model", value.name = "R2") %>% filter(!is.na(R2))
+lipids_pgs_r2_agesex_batch_diet_neurodev.diff$lipid <- as.character(lipids_pgs_r2_agesex_batch_diet_neurodev.diff$lipid)
+lipids_pgs_r2_agesex_batch_diet_neurodev.diff$lipid_name <- as.character(lipids_pgs_r2_agesex_batch_diet_neurodev.diff$lipid_name)
+lipids_pgs_r2_agesex_batch_diet_neurodev.diff$model <- as.character(lipids_pgs_r2_agesex_batch_diet_neurodev.diff$model)
+
+# Add phenotype that lipids are associated with
+#lipids_pgs_r2_agesex_neurodev.diff.long <- inner_join(lipids_pgs_r2_agesex_neurodev.diff.long, by = "lipid")
+
+# - neurodev phenotypes
+data_order <- unique(lipids_pgs_r2_agesex_batch_diet_neurodev.diff %>% pull(lipid_name))
+lipids_pgs_r2_agesex_batch_diet_neurodev.diff$MatchLipid <- match(lipids_pgs_r2_agesex_batch_diet_neurodev.diff$lipid_name, data_order)
+analysis_order <- rev(unique(lipids_pgs_r2_agesex_batch_diet_neurodev.diff$model))
+lipids_pgs_r2_agesex_batch_diet_neurodev.diff$MatchModel <- match(lipids_pgs_r2_agesex_batch_diet_neurodev.diff$model, analysis_order)
+lipids_pgs_r2_agesex_batch_diet_neurodev.diff <- left_join(lipids_pgs_r2_agesex_batch_diet_neurodev.diff, anno %>% mutate(lipid = Lipid.species_header))
+
+lipids_pgs_r2_agesex_batch_diet_neurodev.diff %>% mutate(model = fct_reorder(model, MatchModel)) %>%
+  filter(model %in% c("pgs", "add_agesex", "add_batch", "add_diet", "add_trait")) %>%
+  filter(!Pheno %in% c("age", "Tanner (genital)")) %>%
+  ggplot(aes(x = lipid_name, y = R2, fill = model)) + 
+  geom_bar(position="stack", stat="identity") + 
+  scale_fill_manual(values = wes_palette(name = "Zissou1", 6, type = "continuous")[c(6,5,4,1,3)], name = "") +
+  #coord_flip() + 
+  theme_bw() + theme(strip.text.y = element_text(size = 6.5), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + 
+  xlab("Lipid species") + ylab(expression(R^"2")) +
+  facet_grid(~ Pheno, scales = "free_x", space = "free_x")
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/variance/R2_pgs_agesex_trait_batch_diet_neurodev.svg", height = 4, width = 10)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/variance/R2_pgs_agesex_trait_batch_diet_neurodev.png", height = 4, width = 10)
+
+```
+
+## Boxplots
+
+### Lipid species ~ PGS + agesex + ASD
+
+```{r}
+
+ggplot(lipids_pgs_r2_agesex_asd.diff.long %>% mutate(model = fct_reorder(model, MatchModel)), aes(x = model, y = R2, colour = model)) + geom_violin() + geom_boxplot(width = 0.05) + theme(legend.position = "none") + coord_flip()
+
+datatable(lipids_pgs_r2_agesex_asd.diff.long %>% mutate(model = fct_reorder(model, rev(MatchModel))) %>% group_by(model) %>% dplyr::summarise(medianR2 = median(R2), meanR2 = mean(R2), sdR2 = sd(R2)) %>% mutate_if(is.numeric, ~signif(., 3)))
+
+```
+
+### Lipid species ~ PGS + agesex + batch + ASD
+
+```{r}
+
+ggplot(lipids_pgs_r2_agesex_batch_asd.diff.long %>% mutate(model = fct_reorder(model, MatchModel)), aes(x = model, y = R2, colour = model)) + geom_violin() + geom_boxplot(width = 0.05) + theme(legend.position = "none") + coord_flip()
+
+datatable(lipids_pgs_r2_agesex_batch_asd.diff.long %>% mutate(model = fct_reorder(model, rev(MatchModel))) %>% group_by(model) %>% dplyr::summarise(medianR2 = median(R2), meanR2 = mean(R2), sdR2 = sd(R2)) %>% mutate_if(is.numeric, ~signif(., 3)))
+
+```
+
+### Lipid species ~ PGS + agesex + batch + time + ASD
+
+```{r}
+
+ggplot(lipids_pgs_r2_agesex_batchtime_asd.diff.long %>% mutate(model = fct_reorder(model, MatchModel)), aes(x = model, y = R2, colour = model)) + geom_violin() + geom_boxplot(width = 0.05) + theme(legend.position = "none") + coord_flip()
+
+datatable(lipids_pgs_r2_agesex_batchtime_asd.diff.long %>% mutate(model = fct_reorder(model, rev(MatchModel))) %>% group_by(model) %>% dplyr::summarise(medianR2 = median(R2), meanR2 = mean(R2), sdR2 = sd(R2)) %>% mutate_if(is.numeric, ~signif(., 3)))
+
+```
+
+### Lipid species ~ PGS + agesex + diet + ASD
+
+```{r}
+
+ggplot(lipids_pgs_r2_agesex_diet_asd.diff.long %>% mutate(model = fct_reorder(model, MatchModel)), aes(x = model, y = R2, colour = model)) + geom_violin() + geom_boxplot(width = 0.05) + theme(legend.position = "none") + coord_flip()
+
+datatable(lipids_pgs_r2_agesex_diet_asd.diff.long %>% mutate(model = fct_reorder(model, rev(MatchModel))) %>% group_by(model) %>% dplyr::summarise(medianR2 = median(R2), meanR2 = mean(R2), sdR2 = sd(R2)) %>% mutate_if(is.numeric, ~signif(., 3)))
+
+```
+
+# Relationship between PGS and diagnosis
+
+```{r}
+
+lipids_pgs_neurodev.long <- lipids_pgs.long %>% inner_join(., assoc_sig_results_pheno) %>% filter(Pheno %in% c("ASD", "IQ/DQ", "Sleep (CSHQ)"))
+
+pgs_asdhit_asddx <- lipids_pgs_neurodev.long %>% 
+  filter(!is.na(age)) %>% filter(!is.na(sex)) %>% filter(!is.na(ASD)) %>% 
+  filter(Pheno == "ASD") %>%
+  group_by(lipid) %>% do(model = parameters::model_parameters(model = lm(lipid_PGS_EUR ~ ASD, data = .), ci = 0.95, verbose = FALSE) %>% parameters::standardize_names(style = "broom") %>% filter(term != "(Intercept)"))
+pgs_asdhit_asddx$model <- lapply(1:nrow(pgs_asdhit_asddx), function(x) data.frame(pgs_asdhit_asddx$model[[x]], lipid = as.character(pgs_asdhit_asddx$lipid[x]), Pheno = "ASD"))
+pgs_asdhit_asddx_sum <- do.call(rbind, pgs_asdhit_asddx$model)
+pgs_asdhit_asddx_sum <- pgs_asdhit_asddx_sum %>% mutate_if(is.factor, as.character)
+
+pgs_iqdqhit_asddx <- lipids_pgs_neurodev.long %>% 
+  filter(!is.na(age)) %>% filter(!is.na(sex)) %>% filter(!is.na(ASD)) %>% 
+  filter(Pheno == "IQ/DQ") %>%
+  group_by(lipid) %>% do(model = parameters::model_parameters(model = lm(lipid_PGS_EUR ~ ASD, data = .), ci = 0.95, verbose = FALSE) %>% parameters::standardize_names(style = "broom") %>% filter(term != "(Intercept)"))
+pgs_iqdqhit_asddx$model <- lapply(1:nrow(pgs_iqdqhit_asddx), function(x) data.frame(pgs_iqdqhit_asddx$model[[x]], lipid = pgs_iqdqhit_asddx$lipid[x], Pheno = "iq_dq_wisccomp_mselnv_nih"))
+pgs_iqdqhit_asddx_sum <- do.call(rbind, pgs_iqdqhit_asddx$model)
+pgs_iqdqhit_asddx_sum <- pgs_iqdqhit_asddx_sum %>% mutate_if(is.factor, as.character)
+
+pgs_iqdqhit_iqdq <- lipids_pgs_neurodev.long %>% 
+  filter(!is.na(age)) %>% filter(!is.na(sex)) %>% filter(!is.na(iq_dq_wisccomp_mselnv_nih)) %>% 
+  filter(Pheno == "IQ/DQ") %>%
+  group_by(lipid) %>% do(model = parameters::model_parameters(model = lm(lipid_PGS_EUR ~ iq_dq_wisccomp_mselnv_nih, data = .), ci = 0.95, verbose = FALSE) %>% parameters::standardize_names(style = "broom") %>% filter(term != "(Intercept)"))
+pgs_iqdqhit_iqdq$model <- lapply(1:nrow(pgs_iqdqhit_iqdq), function(x) data.frame(pgs_iqdqhit_iqdq$model[[x]], lipid = pgs_iqdqhit_iqdq$lipid[x], Pheno = "iq_dq_wisccomp_mselnv_nih"))
+pgs_iqdqhit_iqdq_sum <- do.call(rbind, pgs_iqdqhit_iqdq$model)
+pgs_iqdqhit_iqdq_sum <- pgs_iqdqhit_iqdq_sum %>% mutate_if(is.factor, as.character)
+
+pgs_sleephit_asddx <- lipids_pgs_neurodev.long %>% 
+  filter(!is.na(age)) %>% filter(!is.na(sex)) %>% filter(!is.na(ASD)) %>% 
+  filter(Pheno == "Sleep (CSHQ)") %>%
+  group_by(lipid) %>% do(model = parameters::model_parameters(model = lm(lipid_PGS_EUR ~ ASD, data = .), ci = 0.95, verbose = FALSE) %>% parameters::standardize_names(style = "broom") %>% filter(term != "(Intercept)"))
+pgs_sleephit_asddx$model <- lapply(1:nrow(pgs_sleephit_asddx), function(x) data.frame(pgs_sleephit_asddx$model[[x]], lipid = pgs_sleephit_asddx$lipid[x], Pheno = "sleep_cshq_total"))
+pgs_sleephit_asddx_sum <- do.call(rbind, pgs_sleephit_asddx$model)
+pgs_sleephit_asddx_sum <- pgs_sleephit_asddx_sum %>% mutate_if(is.factor, as.character)
+
+pgs_sleephit_sleep <- lipids_pgs_neurodev.long %>% 
+  filter(!is.na(age)) %>% filter(!is.na(sex)) %>% filter(!is.na(sleep_cshq_total)) %>% 
+  filter(Pheno == "Sleep (CSHQ)") %>%
+  group_by(lipid) %>% do(model = parameters::model_parameters(model = lm(lipid_PGS_EUR ~ sleep_cshq_total, data = .), ci = 0.95, verbose = FALSE) %>% parameters::standardize_names(style = "broom") %>% filter(term != "(Intercept)"))
+pgs_sleephit_sleep$model <- lapply(1:nrow(pgs_sleephit_sleep), function(x) data.frame(pgs_sleephit_sleep$model[[x]], lipid = pgs_sleephit_sleep$lipid[x], Pheno = "sleep_cshq_total"))
+pgs_sleephit_sleep_sum <- do.call(rbind, pgs_sleephit_sleep$model)
+pgs_sleephit_sleep_cov_sum <- pgs_sleephit_sleep_sum %>% mutate_if(is.factor, as.character)
+
+pgs_pheno_sum.tmp <- rbind(pgs_asdhit_asddx_sum, pgs_iqdqhit_asddx_sum, pgs_iqdqhit_iqdq_sum, pgs_sleephit_asddx_sum, pgs_sleephit_sleep_cov_sum)
+pgs_pheno_sum <- rbind(pgs_asdhit_asddx_sum, pgs_iqdqhit_iqdq_sum, pgs_sleephit_sleep_cov_sum)
+
+pgs_pheno_sum_sig <- pgs_pheno_sum %>% filter(p.value <= 0.05) %>% filter(abs(estimate) > 1e-5) %>% mutate(Lipid.species_header = lipid)
+pgs_pheno_sum_sig <- left_join(pgs_pheno_sum_sig, anno, by = "Lipid.species_header")
+
+pgs_pheno_sum %>% mutate(sign = sign(estimate)) %>% group_by(term) %>% dplyr::summarise(pos = length(which(sign == 1)), neg = length(which(sign == -1)))
+
+lipids_pgs_neurodev.long %>% filter(lipid %in% pgs_pheno_sum_sig$lipid) %>% 
+  ggplot(aes(x = lipid_PGS_EUR, y = sleep_cshq_total, colour = participant_type)) +
+  scale_colour_manual(values=rep(brewer.pal(3,"Dark2"))) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  ylab("Sleep (CSHQ)") + xlab("lipid PGS (EUR)") +
+  theme(legend.position = "bottom") +
+  facet_wrap(~ Lipid.species, scales = "free_x")
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pgs/pgslipid_pheno_cor.png", height = 7, width = 4)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pgs/pgslipid_pheno_cor.svg", height = 7, width = 4)
+
+```
+
+# Genetic loci 
+
+## Read in
+
+```{r}
+
+assoc_sig_results_pheno_sumstats_dir <- paste("/Volumes/YAPASD-Q0851/uqcyap3/ASD/Data/5_metabolomics/analysis/pgs/sumstats_busselton/", assoc_sig_results_pheno %>% filter(Pheno %in% c("ASD", "IQ/DQ", "Sleep (CSHQ)")) %>% pull(lipid), ".txt", sep = "")
+assoc_sig_results_pheno_sumstats.ls <- lapply(assoc_sig_results_pheno_sumstats_dir, function(x) read.delim(x, header = T, as.is = T))
+
+# Munge into GRanges object
+assoc_sig_results_pheno_sumstats <- do.call(rbind, assoc_sig_results_pheno_sumstats.ls)
+assoc_sig_results_pheno_sumstats <- left_join(assoc_sig_results_pheno_sumstats, assoc_sig_results_pheno %>% mutate(Lipid_Species_header = lipid), by = "Lipid_Species_header") %>% filter(Pheno %in% c("ASD", "IQ/DQ", "Sleep (CSHQ)"))
+assoc_sig_results_pheno_sumstats.gr <- GRanges(
+	seqnames = Rle(paste("chr", assoc_sig_results_pheno_sumstats$Chromosome, sep = "")),
+	ranges = IRanges(start = assoc_sig_results_pheno_sumstats$Position_hg19, end = assoc_sig_results_pheno_sumstats$Position_hg19+1, names = assoc_sig_results_pheno_sumstats$SNP),
+	strand = Rle("*"),
+	Lipid_Species = assoc_sig_results_pheno_sumstats$Lipid_Species,
+	Lipid_Species_header = assoc_sig_results_pheno_sumstats$Lipid_Species_header,
+	Lipid_Class = assoc_sig_results_pheno_sumstats$Lipid_Class,
+	SNP = assoc_sig_results_pheno_sumstats$SNP,
+	Effect_Allele = assoc_sig_results_pheno_sumstats$Effect_Allele,
+	Other_Allele = assoc_sig_results_pheno_sumstats$Other_Allele,
+	Beta = assoc_sig_results_pheno_sumstats$Beta,
+	SE = assoc_sig_results_pheno_sumstats$SE,
+	P = assoc_sig_results_pheno_sumstats$P,
+	Pheno = assoc_sig_results_pheno_sumstats$Pheno)
+
+length(assoc_sig_results_pheno_sumstats.gr)
+length(unique(names(assoc_sig_results_pheno_sumstats.gr)))
+unique(assoc_sig_results_pheno_sumstats$Chromosome)
+
+assoc_sig_results_pheno_sumstats_countperchr <- assoc_sig_results_pheno_sumstats %>% 
+  group_by(Lipid_Species, Chromosome) %>% 
+  dplyr::summarise(n=n()) %>% 
+  pivot_wider(names_from = Chromosome, values_from = n) %>% 
+  mutate_if(is.factor, ~is.numeric)
+datatable(assoc_sig_results_pheno_sumstats_countperchr)
+colSums(assoc_sig_results_pheno_sumstats_countperchr[,2:ncol(assoc_sig_results_pheno_sumstats_countperchr)], na.rm = T)
+
+# Manhattan plot
+keep_chr <- count(assoc_sig_results_pheno_sumstats$Chromosome) %>% filter(freq > 1) %>% pull(x)
+ggplot(assoc_sig_results_pheno_sumstats %>% filter(Chromosome %in% keep_chr), aes(x = Position_hg19, y = -log10(P), colour = Pheno)) +
+  geom_point(alpha = 0.5) +
+  scale_colour_brewer(palette="Dark2") + 
+  theme_bw() + theme(legend.position = "bottom", axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  facet_grid(~ Chromosome, scales = "free_x")
+
+keep_chr <- count(assoc_sig_results_pheno_sumstats$Chromosome) %>% filter(freq > 1) %>% pull(x)
+ggplot(assoc_sig_results_pheno_sumstats, aes(x = Position_hg19, y = -log10(P), colour = Pheno)) +
+  geom_point(alpha = 0.5) +
+  scale_colour_brewer(palette="Dark2") + 
+  scale_x_continuous(labels = scales::scientific) +
+  theme_bw() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  xlab("Position (hg19)") +
+  facet_grid(~ Chromosome, scales = "free_x")
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pgs/busselton_neurodev_snp_position.png", height = 4, width = 10)
+
+write.table(assoc_sig_results_pheno_sumstats, "~/Documents/Research/ASD/Output/5_metabolomics/analysis/pgs/busselton_neurodev_snp_position.txt", col.names = T, row.names = F, quote = F, sep = "\t")
+
+```
+
+## Visualise
+
+### Focus on chr11 as the majority of hits are here
+
+```{r}
+
+assoc_sig_results_pheno_sumstats_chr11.gr <- assoc_sig_results_pheno_sumstats.gr[seqnames(assoc_sig_results_pheno_sumstats.gr) == "chr11"]
+
+# Find max and min ranges
+print("Find max and min of chr11 range")
+min(start(assoc_sig_results_pheno_sumstats_chr11.gr))
+max(start(assoc_sig_results_pheno_sumstats_chr11.gr))
+
+# Find number of unique lipids
+print("No. unique lipids")
+length(unique(assoc_sig_results_pheno_sumstats_chr11.gr$Lipid_Species))
+print("No. unique lipid classes")
+length(unique(assoc_sig_results_pheno_sumstats_chr11.gr$Lipid_Class))
+
+assoc_sig_results_pheno_sumstats_chr11.df <- data.frame(assoc_sig_results_pheno_sumstats_chr11.gr)
+
+# Join sumstats from LWAS
+assoc_sig_results_neurodev <- assoc_sig_results %>% filter(Pheno %in% c("ASD", "IQ_DQ", "sleep_problems")) %>% 
+  dplyr::select(c("Pheno", "Probe", "b", "se", "p")) %>% mutate(Lipid_Species_header = Probe)%>%
+  mutate(Pheno = case_when(Pheno == "ASD" ~ "ASD",
+                        Pheno == "age" ~ "age",
+                        Pheno == "tanner_genital" ~ "Tanner (genital)",
+                        Pheno == "IQ_DQ" ~ "IQ/DQ",
+                        Pheno == "sleep_problems" ~ "Sleep (CSHQ)"))
+
+assoc_sig_results_pheno_sumstats_chr11.df <- left_join(assoc_sig_results_pheno_sumstats_chr11.df, assoc_sig_results_neurodev, by = c("Pheno", "Lipid_Species_header"))
+
+# Check number of SNPs included
+lipids_pgs_eur_nsnp %>% filter(Lipid_species %in% assoc_sig_results_pheno_sumstats_chr11.df$Lipid_Species_header) %>% arrange(NSNP, decreasing = T) %>% datatable()
+
+```
+
+```{r}
+
+ggplot(assoc_sig_results_pheno_sumstats_chr11.df, aes(x = start, y = -log10(P), size = -log10(p), colour = Pheno)) +
+  geom_point(shape = 1) +
+  scale_colour_manual(values = wes_palette(name = "Zissou1", 6, type = "continuous")[c(6,1,3)], name = "") +
+  theme_bw() #+ theme(legend.position = "bottom")
+
+ggplot(assoc_sig_results_pheno_sumstats_chr11.df, aes(x = start, y = -log10(P), size = -log10(p), colour = Pheno)) +
+  geom_point(shape = 1) +
+  scale_colour_manual(values = wes_palette(name = "Zissou1", 6, type = "continuous")[c(6,1,3)], name = "") +
+  theme_bw() + theme(legend.position = "bottom") +
+  facet_wrap(~ Lipid_Species)
+
+ggplot(assoc_sig_results_pheno_sumstats_chr11.df %>% filter(Pheno == "ASD"), aes(x = start, y = -log10(P), size = -log10(p), colour = Lipid_Species)) +
+  geom_point(shape = 1) +
+  scale_colour_manual(values = wes_palette(name = "Zissou1", type = "continuous"), name = "") +
+  theme_bw() + ylab("Lipid species GWAS: -log10(P)") + xlab("chr11 position (hg19)") +
+  facet_grid(~ Pheno) +
+  guides(size=guide_legend(title="ASD LWAS -log10(P)"))
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pgs/sig_lipids_chr11_busselton_LWAS_ASD.png", height = 4, width = 5)
+
+ggplot(assoc_sig_results_pheno_sumstats_chr11.df %>% filter(Pheno == "IQ/DQ"), aes(x = start, y = -log10(P), size = -log10(p), colour = Lipid_Species)) +
+  geom_point(shape = 1) +
+  scale_colour_manual(values = wes_palette(name = "Zissou1", type = "continuous"), name = "") +
+  theme_bw() + ylab("Lipid species GWAS: -log10(P)") + xlab("chr11 position (hg19)") +
+  facet_grid(~ Pheno) +
+  guides(size=guide_legend(title="IQ/DQ LWAS -log10(P)"))
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pgs/sig_lipids_chr11_busselton_LWAS_IQDQ.png", height = 4, width = 5)
+
+ggplot(assoc_sig_results_pheno_sumstats_chr11.df %>% filter(Pheno == "Sleep (CSHQ)"), aes(x = start, y = -log10(P), size = -log10(p), colour = Lipid_Species)) +
+  geom_point(shape = 1) +
+  scale_colour_manual(values = wes_palette(name = "Zissou1", 15, type = "continuous"), name = "") +
+  theme_bw() + ylab("Lipid species GWAS: -log10(P)") + xlab("chr11 position (hg19)") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  facet_wrap(~ Lipid_Species) + 
+  guides(size=guide_legend(title="Sleep LWAS -log10(P)")) +
+  scale_x_continuous(labels = scales::scientific)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pgs/sig_lipids_chr11_busselton_LWAS_sleep.png", height = 6, width = 8)
+
+```
+
+# PGS with full sumstats (for ABCD)
+
+## Read in
+
+```{r}
+
+library(data.table)
+library(dplyr)
+
+dir <- list.files("/Volumes/YAPASD-Q0851/uqcyap3/ASD/Data/5_metabolomics/analysis/pgs/sumstats_busselton_full/pthresh")
+sscore_dir <- dir[grep(".sscore", dir)]
+sscore_dir <- sscore_dir[-grep("vars", sscore_dir)]
+pc_dir <- sscore_dir[grepl("PC.O.18.0.20.4.", sscore_dir)]
+pe_dir <- sscore_dir[grepl("PE.P.19.0.20.4...b.", sscore_dir)]
+
+# Munge into 1 df
+pc_pgs <- fread(paste("/Volumes/YAPASD-Q0851/uqcyap3/ASD/Data/5_metabolomics/analysis/pgs/sumstats_busselton_full/pthresh/", pc_dir[1], sep = ""))[,c("IID", "SCORE1_AVG")] # initiate
+for (i in 2:length(pc_dir)) {
+  tmp <- fread(paste("/Volumes/YAPASD-Q0851/uqcyap3/ASD/Data/5_metabolomics/analysis/pgs/sumstats_busselton_full/pthresh/", pc_dir[i], sep = ""))[,c("IID", "SCORE1_AVG")]
+  colnames(tmp) <- c("IID", pc_dir[i])
+  pc_pgs <- inner_join(pc_pgs, tmp)
+}
+colnames(pc_pgs) <- c("IID", "p5e3", "p5e4", "p5e5", "p5e6", "p5e7", "p5e8")
+
+# Munge into 1 df
+pe_pgs <- fread(paste("/Volumes/YAPASD-Q0851/uqcyap3/ASD/Data/5_metabolomics/analysis/pgs/sumstats_busselton_full/pthresh/", pe_dir[1], sep = ""))[,c("IID", "SCORE1_AVG")] # initiate
+for (i in 2:length(pe_dir)) {
+  tmp <- fread(paste("/Volumes/YAPASD-Q0851/uqcyap3/ASD/Data/5_metabolomics/analysis/pgs/sumstats_busselton_full/pthresh/", pe_dir[i], sep = ""))[,c("IID", "SCORE1_AVG")]
+  colnames(tmp) <- c("IID", pe_dir[i])
+  pe_pgs <- inner_join(pe_pgs, tmp)
+}
+colnames(pe_pgs) <- c("IID", "p5e3", "p5e4", "p5e5", "p5e6", "p5e7", "p5e8")
+
+```
+
+## Filter EUR
+
+```{r}
+
+eur <- fread("/Volumes/YAPASD-Q0851/uqcyap3/ASD/Data/5_metabolomics/analysis/pgs/pgs_lipids_EUR/lipid_class/Total.Ubiquinone.pthresh.sscore") # only generated PGS for EUR previously
+
+pc_pgs_eur <- pc_pgs[which(pc_pgs$IID %in% eur$IID),]
+pe_pgs_eur <- pe_pgs[which(pe_pgs$IID %in% eur$IID),]
+
+```
+
+## Standardise
+
+```{r}
+
+pc_pgs_eur_std <- data.frame(IID = pc_pgs_eur$IID, apply(pc_pgs_eur[,2:ncol(pc_pgs_eur)], 2, function(x) (x-mean(x))/sd(x)))
+pe_pgs_eur_std <- data.frame(IID = pe_pgs_eur$IID, apply(pe_pgs_eur[,2:ncol(pe_pgs_eur)], 2, function(x) (x-mean(x))/sd(x)))
+
+```
+
+## Join to pheno data
+
+```{r}
+
+lipids_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Individual_lipids.csv"
+
+lipids <- data.frame(fread(lipids_dir))
+
+lipids_pc_pgs_eur_std <- inner_join(lipids[,c("IID", "PC.O.18.0.20.4.")], pc_pgs_eur_std, by = "IID")
+lipids_pe_pgs_eur_std <- inner_join(lipids[,c("IID", "PE.P.19.0.20.4...b.")], pe_pgs_eur_std, by = "IID")
+
+lipids_pc_pgs_eur_std.long <- melt(lipids_pc_pgs_eur_std, id.vars = c("IID", "PC.O.18.0.20.4."), variable.name = "pthresh", value.name = "PGS")
+lipids_pe_pgs_eur_std.long <- melt(lipids_pe_pgs_eur_std, id.vars = c("IID", "PE.P.19.0.20.4...b."), variable.name = "pthresh", value.name = "PGS")
+
+```
+
+## Assess prediction
+
+- result from this is that p5e8 threshold works well for both
+- PC.O.18.0.20.4.: p5e6 is best, then p5e8
+- PE.P.19.0.20.4...b.: p5e4 is best, then p5e8
+
+```{r}
+
+library(tidyr)
+library(broom)
+pc_coef <- lipids_pc_pgs_eur_std.long %>% group_by(pthresh) %>% 
+  do(model = tidy(aov(PGS ~ PC.O.18.0.20.4., data = .))) %>% unnest(model)
+pc_varsum <- pc_coef %>% group_by(pthresh) %>% dplyr::summarise(varsum = sum(sumsq))
+pc_coef_pgs <- pc_coef %>% filter(term != "Residuals")
+pc_coef_pgs_varpc <- pc_coef_pgs %>% mutate(varpc = pc_coef_pgs$sumsq/pc_varsum$varsum)
+
+print(pc_coef_pgs_varpc)
+
+pe_coef <- lipids_pe_pgs_eur_std.long %>% group_by(pthresh) %>% 
+  do(model = tidy(aov(PGS ~ PE.P.19.0.20.4...b., data = .))) %>% unnest(model)
+pe_varsum <- pe_coef %>% group_by(pthresh) %>% dplyr::summarise(varsum = sum(sumsq))
+pe_coef_pgs <- pe_coef %>% filter(term != "Residuals")
+pe_coef_pgs_varpc <- pe_coef_pgs %>% mutate(varpc = pe_coef_pgs$sumsq/pe_varsum$varsum)
+
+print(pe_coef_pgs_varpc)
+
+```
+
+## Regress against phenotypes
+
+```{r}
+
+lipids_pc_pgs_eur_std.long_pheno <- inner_join(lipids_pc_pgs_eur_std.long, pheno[,c("IID", "iq_dq_wisccomp_mselnv_nih", "sleep_cshq_total")], by = "IID")
+
+summary(lm(iq_dq_wisccomp_mselnv_nih ~ PGS, data = lipids_pc_pgs_eur_std.long_pheno))
+
+lipids_pe_pgs_eur_std.long_pheno <- inner_join(lipids_pe_pgs_eur_std.long, pheno[,c("IID", "iq_dq_wisccomp_mselnv_nih", "sleep_cshq_total")], by = "IID")
+
+summary(lm(sleep_cshq_total ~ PGS, data = lipids_pe_pgs_eur_std.long_pheno))
+
+
+```

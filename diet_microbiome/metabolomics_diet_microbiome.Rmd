@@ -1,0 +1,2054 @@
+---
+title: 'LWAS hits: diet and microbiome'
+author: "Chloe Yap"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  epuRate::PCTG:
+    toc: TRUE
+    number_sections: FALSE
+    code_folding: "hide"
+---
+
+# Set-up
+
+## Libraries
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# You need these libraries to run this template:
+library(rmarkdown)    # install.packages("rmarkdown") 
+library(epuRate)      # devtools::install_github("holtzy/epuRate", force=TRUE)
+library(tidyverse)
+library(data.table)
+library(factoextra)
+library(ggplot2)
+ggplot2::theme_set(ggplot2::theme_bw())
+library(GGally)
+library(ggforce)
+library(corrplot)
+library(devtools)
+#install_github("vqv/ggbiplot")
+library(ggbiplot)
+library(caret)
+library(DT)
+library(vegan)
+library(ComplexHeatmap)
+library(colorspace)
+library(MASS)
+library(RColorBrewer)
+library(ggrepel)
+
+library(rms)
+library(fgsea)
+library(fastmatch)
+library(wesanderson)
+library(UpSetR)
+library(broom)
+
+```
+
+## Directories
+
+```{r}
+
+lipids_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Individual_lipids.csv"
+lipids_class_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Total_lipids_class.csv"
+batch_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Annotation_Batch.csv"
+outliers_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Sample_outliers.csv"
+outliers_lipids_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/analysis/outliers_lipids_batch.id"
+anno_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Annotation.csv"
+pheno_aab_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/Phenotype/extracted_pheno/cognitive_crossancestry_child.pheno"
+pheno_aab_qtab_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/Phenotype/extracted_pheno/AAB_QTAB_aggregated.pheno"
+diet_raw_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/Diet/AES_ACRC_QTAB/AES_ACRC_QTAB_diet_metabolomics.txt"
+diet_pc_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/Diet/AES_ACRC_QTAB/AES_ACRC_QTAB_diet_PC_metabolomics_264_pcenergy_PC13_clr_dietonly.csv"
+##### ADD pePCs on new subset of data
+
+```
+
+## Read-in data
+
+```{r}
+
+lipids <- read.csv(lipids_dir, header = T, as.is = T)
+lipids_class <- read.csv(lipids_class_dir, header = T, as.is = T)
+batch <- read.csv(batch_dir, header = T, as.is = T)
+outliers <- read.csv(outliers_dir, header = T, as.is = T)
+outliers_lipids <- read.delim(outliers_lipids_dir, header = F, as.is = T)
+anno <- read.csv(anno_dir, header = T, as.is = T)
+anno_class.tmp <- read.csv(lipids_class_dir, header = F, as.is = T)
+pheno_aab_full <- read.delim(pheno_aab_dir, header = T, as.is = T)
+pheno_aab_qtab <- read.delim(pheno_aab_qtab_dir, header = T, as.is = T)
+diet_raw <- read.delim(diet_raw_dir, header = T, as.is = T)
+diet_pc <- read.csv(diet_pc_dir, header = T, as.is = T)
+
+```
+
+## Clean data
+
+```{r}
+
+pheno_full <- left_join(pheno_aab_qtab, pheno_aab_full, by = c("IID", "participant_type", "ASD", "storage_blood_days", "collection_blood_time", "sex", "FAM_ID_geno", "pgs_asd_aab_qtab", "pgs_xtrait_adhd_asd_ts_aab_qtab", "pgs_neuroticism_aab_qtab", "MG_SampleID", "MG_CTG_COLL_ID", "MG_FID", "MG_sibpair"))
+pheno.tmp <- left_join(lipids[,1:2], pheno_full)
+pheno <- pheno.tmp[order(match(pheno.tmp$IID, lipids$IID)),]
+pheno <- left_join(pheno, batch, by = "RunID")
+
+rm_oldpePC <- grep("diet_pe", colnames(pheno))
+pheno <- pheno[,-rm_oldpePC]
+pheno <- left_join(pheno, diet_pc, by = "IID")
+
+micro_col <- c("fibre","thiamin","riboflavin","niacinequiv","vitc","folate","vita","retinol","betacarotine","sodium","potassium","magnesium","calcium","phosphorus","iron","zinc")
+macro_col <- c("protein","fats","satfats","polyfats","monofats","cholesterol","carbohydrate","sugars")
+pe_col <- c("peprotein", "pecarbohydrate", "pefats", "pesatfats", "pepolyfats", "pemonofats", "pealcohol", "pecore", "penoncore", "peveg", "pefruit", "pemeat", "pealt", "pegrains", "pedairy", "pesweet_drink", "pepack_snack", "peconfect", "pebaked_products", "petakeaway", "pecondiments", "pefatty_meats", "pefatty_meats", "pealcohol_bev", "pemisc")
+arfs_col <- colnames(diet_raw)[grep("^arfs_", colnames(diet_raw))]
+diet_derived <- diet_raw %>% dplyr::select(IID, all_of(c(micro_col, macro_col, pe_col, arfs_col)))
+pheno <- left_join(pheno, diet_derived, by = "IID")
+
+# Tidy up columns
+pheno$iq_dq_wisccomp_mselnv_nih <- as.numeric(pheno$iq_dq_wisccomp_mselnv_nih)
+
+identical(pheno$IID, lipids$IID)
+identical(pheno$IID, lipids_class$IID)
+
+# Add outliers column
+pheno$outliers <- as.character(ifelse(pheno$IID %in% outliers$IID, pheno$IID, NA))
+
+# Add adverse events column
+adverse_event.id <- c(2202542, 4406321, 3304969, 2202511, 4406320, 4406272, 3392391, 4406348, 1101685, 1101639, 2202554, 3304926)
+pheno$adverse_event <- ifelse(pheno$IID %in% adverse_event.id, pheno$IID, NA)
+
+# Check that there are no cotwins in the dataset
+qtabtwin <- c(258404, 258108, 258580, 258625, 258541, 258139, 258752, 258810, 258591, 258235, 258724, 258796, 258367, 258934, 258898, 258682, 258631, 258819, 258148, 258218, 258009, 258003, 258021, 25875)
+qtabcotwin <- c(258403, 258175, 258823, 258505, 258046, 258348, 258826, 258093, 258639, 258757, 258634, 258872, 258561, 258536, 258794, 258820, 258429, 258181, 258569, 258294, 258495, 258804, 25883)
+length(which(pheno$IID %in% qtabcotwin))
+
+# Check coding
+pheno$sex <- as.factor(pheno$sex)
+
+# Add age^2
+pheno$age2 <- pheno$age^2
+
+# Add periodic functions for time of sample collection
+# - based on eyeballing the lipid vs collection time graphs, it looksl ike the cosine transform generalises better across lipids
+#pheno$collection_blood_time_sin <- sin((pheno$collection_blood_time/2400)*pi)
+#plot(pheno$collection_blood_time, pheno$collection_blood_time_sin)
+pheno$collection_blood_time_cos <- sin((pheno$collection_blood_time/2400)*2*pi)
+plot(pheno$collection_blood_time, pheno$collection_blood_time_cos)
+
+# Add ifnerred clinical lipids variables
+identical(lipids$IID, lipids_class$IID)
+identical(pheno$IID, lipids_class$IID)
+pheno$cholesterol_lipidome <- lipids$COH + lipids_class$Total.CE
+pheno$triglycerides_lipidome <- lipids_class$Total.TG.SIM.
+
+# Make annotation column with matching format to headers
+anno$Lipid.species_header <- gsub("[^[:alnum:] ]", ".", anno$Lipid.species)
+anno$Lipid.species_header <- gsub(" ", ".", anno$Lipid.species_header)
+
+# Make annotation file for lipids_class
+anno_class <- data.frame(lipid = colnames(lipids_class)[3:ncol(lipids_class)], Lipid.species = as.vector(t(anno_class.tmp[1,3:ncol(anno_class.tmp)])), Lipid.species_header = colnames(lipids_class)[3:ncol(lipids_class)], Lipid.class = as.vector(t(anno_class.tmp[1,3:ncol(anno_class.tmp)])))
+anno_class[] <- lapply(anno_class, as.character)
+
+# Remove TG [NL] from classes and TG [SIM] from lipids
+rm_lipids_class <- grep(".NL.", colnames(lipids_class))
+rm_lipids <- grep(".SIM.", colnames(lipids))
+lipids_class <- lipids_class[,-rm_lipids_class]
+lipids <- lipids[,-rm_lipids]
+
+# Lipid classes
+rownames(lipids_class) <- lipids_class$IID
+lipids_class.long <- melt(lipids_class, id.vars = c("RunID", "IID"), variable.name = "lipid", value.name = "pmol_mL")
+lipids_class.long <- left_join(lipids_class.long, pheno, by = "IID")
+lipids_class.long <- left_join(lipids_class.long, anno_class, by = "lipid")
+
+# Lipids
+rownames(lipids) <- lipids$IID
+colnames(lipids) <- gsub("[^[:alnum:] ]", ".", colnames(lipids))
+lipids.long <- melt(lipids, id.vars = c("RunID", "IID"), variable.name = "lipid", value.name = "pmol_mL")
+lipids.long <- left_join(lipids.long, pheno)
+anno.tmp <- anno
+colnames(anno.tmp)[which(colnames(anno.tmp) == "Lipid.species_header")] <- "lipid"
+lipids.long <- left_join(lipids.long, anno.tmp, by = "lipid")
+
+```
+
+### Exclude participants
+
+```{r}
+
+# Keep back-ups
+lipids_class_keepSMS <- lipids_class
+lipids_keepSMS <- lipids
+pheno_keepSMS <- pheno
+lipids.long_keepSMS <- lipids.long
+
+# Exclude participant
+lipids_class <- lipids_class %>% filter(IID != 4494902)
+lipids <- lipids %>% filter(IID != 4494902)
+pheno <- pheno %>% filter(IID != 4494902)
+lipids.long <- lipids.long %>% filter(IID != 4494902)
+lipids_class.long <- lipids_class.long %>% filter(IID != 4494902)
+
+# CHOOSE to remove outliers in the OSCA script
+# Keep outliers
+lipids_class_outliers <- lipids_class
+lipids_outliers <- lipids
+pheno_outliers <- pheno
+lipids.long_outliers <- lipids.long
+
+# Exclude outliers
+outliers.id <- as.vector(outliers$IID)
+lipids_class <- lipids_class %>% filter(!IID %in% outliers.id)
+lipids <- lipids %>% filter(!IID %in% outliers.id)
+pheno <- pheno %>% filter(!IID %in% outliers.id)
+lipids.long <- lipids.long %>% filter(!IID %in% outliers.id)
+lipids_class.long <- lipids_class.long %>% filter(!IID %in% outliers.id)
+
+# rownames
+rownames(lipids_class) <- lipids_class$IID
+rownames(lipids) <- lipids$IID
+rownames(pheno) <- lipids$IID
+
+```
+
+### Exclude lipids
+
+```{r}
+
+# Exclude outliers
+outliers_lipids.id <- as.vector(outliers_lipids$V1)
+#lipids_class <- lipids_class %>% select(-all_of(outliers_lipids.id))
+lipids <- lipids %>% dplyr::select(-all_of(outliers_lipids.id))
+lipids.long <- lipids.long %>% filter(!lipid %in% all_of(outliers_lipids.id))
+lipids_class.long <- lipids_class.long %>% filter(!lipid %in% all_of(outliers_lipids.id))
+
+```
+
+### Exclude storage outliers (for ASD analysis only)
+
+```{r}
+
+outliers_storage <- read.delim("~/Documents/Research/ASD/Data/5_metabolomics/analysis/osca/data/outliers_storage.id", header = T, as.is = T)
+outliers_storage.id <- outliers_storage[,1]
+
+```
+
+# Relationships between traits and demographic variables
+
+## Age
+
+```{r}
+
+summary(aov(age ~ participant_type, pheno %>% filter(!IID %in% outliers_storage.id)))
+summary(lm(iq_dq_wisccomp_mselnv_nih ~ age, pheno))
+summary(lm(sleep_cshq_total ~ age, pheno))
+
+```
+
+## Sex
+
+```{r}
+
+dx_sex_table <- pheno %>% filter(!IID %in% outliers_storage.id) %>% dplyr::select("ASD", "sex") %>% group_by(ASD) %>% dplyr::summarise(Male = length(which(sex == 1)), Female = length(which(sex == 2))) %>% dplyr::select(c("Male", "Female"))
+chisq.test(dx_sex_table)
+
+summary(lm(iq_dq_wisccomp_mselnv_nih ~ sex, data = pheno))
+
+summary(lm(sleep_cshq_total ~ sex, data = pheno))
+
+```
+
+## BMI
+
+```{r}
+
+summary(aov(bmiz ~ participant_type, pheno %>% filter(!IID %in% outliers_storage.id)))
+summary(lm(iq_dq_wisccomp_mselnv_nih ~ bmiz, pheno))
+summary(lm(sleep_cshq_total ~ bmiz, pheno))
+
+summary(lm(bmiz ~ sex, pheno))
+summary(lm(bmiz ~ Batch, pheno))
+summary(lm(bmiz ~ InjectionOrder, pheno))
+summary(lm(bmiz ~ storage_blood_days, pheno))
+summary(lm(bmiz ~ collection_blood_time_cos, pheno))
+summary(lm(bmiz ~ protein, pheno))
+summary(lm(bmiz ~ PC1_diet_pe, pheno))
+summary(lm(bmiz ~ PC2_diet_pe, pheno))
+summary(lm(bmiz ~ PC3_diet_pe, pheno))
+summary(lm(bmiz ~ age, pheno))
+summary(lm(bmiz ~ cholesterol, pheno))
+summary(lm(bmiz ~ triglycerides_lipidome, pheno))
+summary(lm(bmiz ~ cholesterol_lipidome, pheno))
+
+```
+
+## Plot
+
+```{r}
+
+pheno %>% filter(!IID %in% outliers_storage.id) %>% dplyr::select("participant_type", "age") %>% mutate(group = participant_type) %>%
+  ggplot(aes(x = age, colour = group, fill = group)) +
+  geom_density(alpha = 0.2) +
+  scale_colour_manual(values = wes_palette("Zissou1", 3, "continuous")) +
+  scale_fill_manual(values = wes_palette("Zissou1", 3, "continuous")) +
+  theme_bw() + theme(legend.position = "bottom", text = element_text(size = 20))
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/eda/participant_type_age_density.png", height = 6, width = 6)
+
+pheno %>% filter(!IID %in% outliers_storage.id) %>% dplyr::select("participant_type", "sex") %>% mutate(group = participant_type) %>%
+  group_by(participant_type, sex) %>% dplyr::summarise(n=n()) %>%
+  mutate(sex = ifelse(sex == 1, "M", "F")) %>%
+  ggplot(aes(x = participant_type, y = n, fill = sex)) +
+  geom_bar(stat = "identity", position=position_dodge()) +
+  scale_fill_manual(values = wes_palette("Zissou1", 4, "continuous")) +
+  theme_bw() + theme(legend.position = "bottom", text = element_text(size = 20))
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/eda/participant_type_sex_bar.png", height = 6, width = 6)
+
+```
+
+# Relationships between traits and diet
+
+## ASD
+
+```{r}
+
+summary(glm(ASD ~ PC1_diet_pe + PC2_diet_pe + PC3_diet_pe, data = pheno %>% filter(!IID %in% outliers_storage.id), family = "binomial"))
+mod.tmp <- glm(ASD ~ PC1_diet_pe + PC2_diet_pe + PC3_diet_pe, data = pheno %>% filter(!IID %in% outliers_storage.id), family = "binomial")
+exp(coef(mod.tmp))
+
+summary(glm(ASD ~ fats + protein + carbohydrate + cholesterol + sugars, data = pheno %>% filter(!IID %in% outliers_storage.id), family = "binomial"))
+mod.tmp <- glm(ASD ~ fats_std + protein + carbohydrate + cholesterol + sugars, data = pheno %>% filter(!IID %in% outliers_storage.id) %>% mutate(fats_std = (fats-(mean(fats, na.rm = T)))/sd(fats, na.rm = T)), family = "binomial")
+exp(coef(mod.tmp))
+
+dha_asd <- glm(ASD ~ as.factor(cam_fishoil_dha), data = pheno %>% filter(!IID %in% outliers_storage.id), family = "binomial")
+summary(dha_asd)
+exp(coef(dha_asd))
+
+```
+
+## IQ/DQ
+
+```{r}
+
+summary(lm(iq_dq_wisccomp_mselnv_nih ~ PC1_diet_pe + PC2_diet_pe + PC3_diet_pe, data = pheno))
+
+summary(lm(iq_dq_wisccomp_mselnv_nih ~ fats + protein + carbohydrate + cholesterol + sugars, data = pheno))
+
+summary(lm(iq_dq_wisccomp_mselnv_nih ~ cam_fishoil_dha, data = pheno))
+
+```
+
+## Chronotype
+
+```{r}
+
+summary(lm(sleep_cshq_total ~ PC1_diet_pe + PC2_diet_pe + PC3_diet_pe, data = pheno))
+
+summary(lm(sleep_cshq_total ~ fats + protein + carbohydrate + cholesterol + sugars, data = pheno))
+
+summary(lm(sleep_cshq_total ~ cam_fishoil_dha, data = pheno))
+
+```
+
+# Relationships between inferred clinical lipids and traits
+
+## ASD
+
+- cholesterol_lipidome (but not triglyceride_lipidome) adds information to diagnosis model
+
+```{r}
+
+# Relationship between diagnosis and clinical lipids
+summary(glm(ASD ~ cholesterol_lipidome, data = pheno %>% filter(!IID %in% outliers_storage.id), family = "binomial"))
+summary(glm(ASD ~ cholesterol_lipidome + triglycerides_lipidome, data = pheno %>% filter(!IID %in% outliers_storage.id), family = "binomial"))
+base_std <- glm(ASD ~ cholesterol_lipidome_std + triglycerides_lipidome_std, data = pheno %>%
+              filter(!IID %in% outliers_storage.id) %>%
+              mutate(cholesterol_lipidome_std = (cholesterol_lipidome - mean(cholesterol_lipidome))/sd(cholesterol_lipidome)) %>%
+              mutate(triglycerides_lipidome_std = (triglycerides_lipidome - mean(triglycerides_lipidome))/sd(triglycerides_lipidome)), family = "binomial")
+exp(coef(base_std))
+
+# - compare models, baseline with covariates (remove storage_blood_days covariate as confounded with ASD diagnosis)
+mod0 <- glm(as.factor(ASD) ~ age + age2 + as.factor(sex) + InjectionOrder, data = pheno %>% filter(!IID %in% outliers_storage.id), family = "binomial")
+mod1 <- glm(as.factor(ASD) ~ age + age2 + as.factor(sex) + InjectionOrder + cholesterol_lipidome, data = pheno %>% filter(!IID %in% outliers_storage.id), family = "binomial")
+
+exp(coef(mod1))
+
+summary(mod0)
+summary(mod1)
+lrtest(mod0,mod1)
+
+mod1std <- glm(as.factor(ASD) ~ age + age2 + as.factor(sex) + InjectionOrder + cholesterol_lipidome_std, 
+               data = pheno %>% filter(!IID %in% outliers_storage.id) %>%
+                 mutate(cholesterol_lipidome_std = (cholesterol_lipidome - mean(cholesterol_lipidome))/sd(cholesterol_lipidome)), 
+               family = "binomial")
+
+exp(coef(mod1std))
+summary(mod1std) # p-value is roughly the same
+
+# Check effect of dietary cholesterol
+# - first test in subset of people with dietary data
+mod0 <- glm(as.factor(ASD) ~ age + age2 + as.factor(sex) + InjectionOrder, data = pheno %>% filter(!IID %in% outliers_storage.id) %>% filter(!is.na(cholesterol)), family = "binomial")
+mod1 <- glm(as.factor(ASD) ~ age + age2 + as.factor(sex) + InjectionOrder + cholesterol, data = pheno %>% filter(!IID %in% outliers_storage.id) %>% filter(!is.na(cholesterol)), family = "binomial")
+summary(mod0)
+summary(mod1)
+lrtest(mod0,mod1)
+# - does adding dietary cholesterol add more information to lipidome?
+mod2 <- glm(as.factor(ASD) ~ age + age2 + sex + InjectionOrder + cholesterol + cholesterol_lipidome, data = pheno %>% filter(!IID %in% outliers_storage.id) %>% filter(!is.na(cholesterol)), family = "binomial")
+summary(mod2)
+lrtest(mod1,mod2)
+
+mod2std <- glm(as.factor(ASD) ~ age + age2 + as.factor(sex) + InjectionOrder + cholesterol_std + cholesterol_lipidome_std, 
+               data = pheno %>% filter(!IID %in% outliers_storage.id) %>%
+                 mutate(cholesterol_lipidome_std = (cholesterol_lipidome - mean(cholesterol_lipidome))/sd(cholesterol_lipidome)) %>%
+                 mutate(cholesterol_std = (cholesterol - mean(cholesterol, na.rm = T))/sd(cholesterol, na.rm = T)), 
+               family = "binomial")
+
+exp(coef(mod2std))
+summary(mod2std) # p-value is roughly the same
+
+# - does adding dietary cholesterol add more info to baseline?
+mod3 <- glm(as.factor(ASD) ~ age + age2 + sex + InjectionOrder + cholesterol, data = pheno %>% filter(!IID %in% outliers_storage.id) %>% filter(!is.na(cholesterol)), family = "binomial")
+summary(mod3)
+lrtest(mod0,mod3)
+
+# Check effect of self-reported antipsychotic (n=18) and ADHD medication usage (n=55)
+rm_meds <- pheno %>% filter(meds_antipsychotic %in% c(1:4) | meds_adhd_behavioural %in% c(1:4)) %>% pull(IID)
+mod0 <- glm(as.factor(ASD) ~ age + age2 + as.factor(sex) + InjectionOrder, data = pheno %>% filter(!IID %in% outliers_storage.id) %>% filter(!IID %in% rm_meds), family = "binomial")
+mod1 <- glm(as.factor(ASD) ~ age + age2 + as.factor(sex) + InjectionOrder + cholesterol_lipidome, data = pheno %>% filter(!IID %in% outliers_storage.id) %>% filter(!IID %in% rm_meds), family = "binomial")
+summary(mod0)
+summary(mod1)
+lrtest(mod0, mod1)
+
+# Check effect of fish oil/DHA (n=71 taking)
+rm_dha <- pheno %>% filter(cam_fishoil_dha == 1) %>% pull(IID)
+mod0 <- glm(as.factor(ASD) ~ age + age2 + as.factor(sex) + InjectionOrder, data = pheno %>% filter(!IID %in% outliers_storage.id) %>% filter(!IID %in% rm_dha), family = "binomial")
+mod1 <- glm(as.factor(ASD) ~ age + age2 + as.factor(sex) + InjectionOrder + cholesterol_lipidome, data = pheno %>% filter(!IID %in% outliers_storage.id) %>% filter(!IID %in% rm_dha), family = "binomial")
+summary(mod0)
+summary(mod1)
+lrtest(mod0, mod1)
+
+summary(lm(cholesterol_lipidome ~ as.factor(meds_antipsychotic) + as.factor(meds_adhd_behavioural), data = pheno))
+
+```
+
+### Plot showing ASD cholesterol by sex and age
+
+```{r}
+
+# Get the residuals for diet separately as incomplete data
+cholesterol_lipidome_resid.tmp <- summary(lm(cholesterol_lipidome ~ age + age2 + sex + Batch + InjectionOrder + storage_blood_days, data = pheno))$residuals
+cholesterol_lipidome_resid <- data.frame(IID = as.integer(names(cholesterol_lipidome_resid.tmp)), cholesterol_lipidome_resid = cholesterol_lipidome_resid.tmp) %>% inner_join(pheno[,c("IID", "ASD")], by = "IID")
+summary(lm(cholesterol_lipidome_resid ~ as.factor(ASD), data = cholesterol_lipidome_resid))
+
+# Get the residuals for diet separately as incomplete data
+cholesterol_diet_resid.tmp <- summary(lm(cholesterol ~ age + age2 + sex + Batch + InjectionOrder + storage_blood_days, data = pheno))$residuals
+cholesterol_diet_resid <- data.frame(IID = as.integer(names(cholesterol_diet_resid.tmp)), cholesterol_diet_resid = cholesterol_diet_resid.tmp) %>% inner_join(pheno[,c("IID", "ASD")], by = "IID")
+summary(lm(cholesterol_diet_resid ~ as.factor(ASD), data = cholesterol_diet_resid))
+
+pheno %>% filter(!IID %in% outliers_storage.id) %>% 
+  mutate(ASD = as.factor(ASD)) %>%
+  mutate(sex = ifelse(sex == 1, "M", "F")) %>%
+  mutate(cholesterol_lipidome_resid = summary(lm(cholesterol_lipidome ~ age + age2 + sex + Batch + InjectionOrder))$residuals) %>%
+  mutate(triglycerides_lipidome_resid = summary(lm(triglycerides_lipidome ~ age + age2 + sex + Batch + InjectionOrder))$residuals) %>%
+  left_join(., cholesterol_diet_resid, by = "IID") %>%
+  melt(measure.vars = c("cholesterol_lipidome_resid", "cholesterol_diet_resid", "triglycerides_lipidome_resid"), variable.name = "cholesterol_type", value.name = "level") %>%
+  mutate(cholesterol_type = case_when(cholesterol_type == "cholesterol_lipidome_resid" ~ "lipidome cholesterol (residuals)",
+                        cholesterol_type == "cholesterol_diet_resid" ~ "dietary cholesterol (residuals)",
+                        cholesterol_type == "triglycerides_lipidome_resid" ~ "lipidome triglycerides (residuals)")) %>%
+  mutate(MatchCholesterol = match(cholesterol_type, c("lipidome cholesterol (residuals)", "dietary cholesterol (residuals)", "lipidome triglycerides (residuals)"))) %>%
+  mutate(cholesterol_type = fct_reorder(cholesterol_type, MatchCholesterol)) %>%
+  ggplot(aes(x = ASD, y = level, colour = age)) +
+  geom_violin(position = position_dodge(.8),alpha=.8)+ 
+  #geom_boxplot(position = position_dodge(.8),alpha=.8,outlier.size = 0)+ 
+  geom_point(aes(colour = age), position = position_jitterdodge(.2),alpha=.8) +
+  theme_bw() + theme(legend.position = "bottom") + ylab("") +
+  scale_fill_continuous(type = "viridis") +
+  scale_colour_continuous(type = "viridis") +
+  facet_grid(cholesterol_type ~ sex, scales = "free_y")
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/eda/ASDgroup_difference_cholesterollipid_cholesteroldiet_triglyceridelipid_sexstratify.png", height = 8, width = 6)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/eda/ASDgroup_difference_cholesterollipid_cholesteroldiet_triglyceridelipid_sexstratify.svg", height = 8, width = 6)
+
+pheno %>% filter(!IID %in% outliers_storage.id) %>% 
+  mutate(ASD = case_when(ASD == 0 ~ "nonASD", ASD == 1 ~ "ASD")) %>%
+  mutate(sex = ifelse(sex == 1, "M", "F")) %>%
+  mutate(cholesterol_lipidome_resid = summary(lm(cholesterol_lipidome ~ age + age2 + sex + Batch + InjectionOrder))$residuals) %>%
+  mutate(triglycerides_lipidome_resid = summary(lm(triglycerides_lipidome ~ age + age2 + sex + Batch + InjectionOrder))$residuals) %>%
+  left_join(., cholesterol_diet_resid, by = "IID") %>%
+  melt(measure.vars = c("cholesterol_lipidome_resid", "cholesterol_diet_resid", "triglycerides_lipidome_resid"), variable.name = "cholesterol_type", value.name = "level") %>%
+  mutate(cholesterol_type = case_when(cholesterol_type == "cholesterol_lipidome_resid" ~ "lipidome cholesterol",
+                        cholesterol_type == "cholesterol_diet_resid" ~ "dietary cholesterol",
+                        cholesterol_type == "triglycerides_lipidome_resid" ~ "lipidome triglycerides")) %>%
+  mutate(MatchCholesterol = match(cholesterol_type, c("lipidome cholesterol", "dietary cholesterol", "lipidome triglycerides"))) %>%
+  mutate(cholesterol_type = fct_reorder(cholesterol_type, MatchCholesterol)) %>%
+  ggplot(aes(x = ASD, y = level)) +
+  geom_violin(position = position_dodge(.8),alpha=.8)+ 
+  geom_point(aes(colour = ASD), position = position_jitterdodge(.2),alpha=.8) +
+  geom_boxplot(width = 0.1, position = position_dodge(.8),alpha=.8,outlier.size = 0)+ 
+  theme_bw() + theme(legend.position = "none") + ylab("") +
+  scale_colour_brewer(palette = "Dark2") +
+  #scale_fill_discrete(type = "viridis") +
+  #scale_colour_discrete(type = "viridis") +
+  ylab("Residuals (demographic, batch)") + xlab("ASD diagnosis") +
+  facet_wrap(~ cholesterol_type, scales = "free_y", nrow = 1)
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/eda/ASDgroup_difference_cholesterollipid_cholesteroldiet_triglyceridelipid.png", height = 2.5, width = 8)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/eda/ASDgroup_difference_cholesterollipid_cholesteroldiet_triglyceridelipid.svg", height = 2.5, width = 8)
+
+pheno %>% filter(!IID %in% outliers_storage.id) %>% 
+  mutate(ASD = as.factor(ASD)) %>%
+  mutate(sex = ifelse(sex == 1, "M", "F")) %>%
+  melt(measure.vars = c("cholesterol_lipidome", "cholesterol", "triglycerides_lipidome"), variable.name = "cholesterol_type", value.name = "level") %>%
+  mutate(cholesterol_type = case_when(cholesterol_type == "cholesterol_lipidome" ~ "lipidome cholesterol")) %>%
+  filter(cholesterol_type == "lipidome cholesterol") %>%
+  ggplot(aes(x = ASD, y = level, colour = age)) +
+  geom_boxplot(position = position_dodge(.8),alpha=.8,outlier.size = 0)+ 
+  geom_point(aes(colour = age), position = position_jitterdodge(.2),alpha=.8) +
+  theme_bw() + theme(legend.position = "right") + ylab("pmol/mL") +
+  scale_fill_continuous(type = "viridis") +
+  scale_colour_continuous(type = "viridis") +
+  facet_grid(~ cholesterol_type, scales = "free_y")
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/eda/ASDgroup_difference_cholesterollipid.png", height = 4, width = 3)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/eda/ASDgroup_difference_cholesterollipid.svg", height = 4, width = 3)
+
+```
+
+## IQ/DQ
+
+```{r}
+
+# Relationship between diagnosis and clinical lipids
+summary(lm(iq_dq_wisccomp_mselnv_nih ~ cholesterol_lipidome + triglycerides_lipidome, data = pheno))
+summary(lm(iq_dq_wisccomp_mselnv_nih ~ age + age2 + sex + InjectionOrder + cholesterol_lipidome + triglycerides_lipidome, data = pheno))
+summary(lm(iq_dq_wisccomp_mselnv_nih ~ age + age2 + sex + InjectionOrder + cholesterol_lipidome + triglycerides_lipidome, data = pheno %>% filter(!IID %in% rm_dha)))
+
+```
+
+## Sleep (CSHQ)
+
+```{r}
+
+# Relationship between diagnosis and clinical lipids
+summary(lm(sleep_cshq_total ~ cholesterol_lipidome + triglycerides_lipidome, data = pheno))
+summary(lm(sleep_cshq_total ~ age + age2 + sex + InjectionOrder + cholesterol_lipidome + triglycerides_lipidome, data = pheno))
+summary(lm(sleep_cshq_total ~ age + age2 + sex + InjectionOrder + cholesterol_lipidome + triglycerides_lipidome, data = pheno %>% filter(!IID %in% rm_dha)))
+
+```
+
+# LWAS hit PCs to traits
+
+```{r}
+lwas_dir <- "~/Documents/Research/ASD/Output/5_metabolomics/analysis/osca/assoc"
+transform_choice <- "int"
+```
+
+```{r}
+
+# Lipidomics PCs
+lipid_pca_asd.tmp <- readRDS(paste(lwas_dir, "/lipids_", transform_choice, "_rmstoragepre_asd_covdemo.logistic", ".sigpca.rds", sep = ""))$x[,"PC1"]
+lipid_pca_asd <- data.frame(IID = as.numeric(names(lipid_pca_asd.tmp)), PC1_lwas_ASD = lipid_pca_asd.tmp * -1)
+lipid_pca_iqdq.tmp <- readRDS(paste(lwas_dir, "/lipids_", transform_choice, "_iqdq_covdemo.linear", ".sigpca.rds", sep = ""))$x[,"PC1"]
+lipid_pca_iqdq <- data.frame(IID = as.numeric(names(lipid_pca_iqdq.tmp)), PC1_lwas_IQDQ = lipid_pca_iqdq.tmp * 1)
+lipid_pca_sleep.tmp <- readRDS(paste(lwas_dir, "/lipids_", transform_choice, "_sleep_covdemo.linear", ".sigpca.rds", sep = ""))$x[,"PC1"]
+lipid_pca_sleep <- data.frame(IID = as.numeric(names(lipid_pca_sleep.tmp)), PC1_lwas_sleep = lipid_pca_sleep.tmp * -1)
+
+# Traits
+lipids_pca_pheno <- pheno %>% 
+  left_join(., lipid_pca_asd, by = "IID") %>%
+  left_join(., lipid_pca_iqdq, by = "IID") %>%
+  left_join(., lipid_pca_sleep, by = "IID") %>%
+  mutate(ASD = as.factor(ASD)) %>%
+  mutate(IQ_DQ = iq_dq_wisccomp_mselnv_nih) %>%
+  mutate(sleep = sleep_cshq_total) %>%
+  dplyr::select(c("PC1_lwas_ASD", "PC1_lwas_IQDQ", "PC1_lwas_sleep", "ASD", "IQ_DQ", "sleep", "cholesterol_lipidome", "triglycerides_lipidome"))
+
+ggpairs(lipids_pca_pheno)
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwasPC1_trait_asd_iqdq_sleep.svg", height = 7, width = 7)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwasPC1_trait_asd_iqdq_sleep.png", height = 7, width = 7)
+
+lipids_pca_pgs <- pheno %>% 
+  left_join(., lipid_pca_asd, by = "IID") %>%
+  left_join(., lipid_pca_iqdq, by = "IID") %>%
+  left_join(., lipid_pca_sleep, by = "IID") %>%
+  mutate(ASD = as.factor(ASD)) %>%
+  mutate(IQ_DQ = iq_dq_wisccomp_mselnv_nih) %>%
+  mutate(sleep = sleep_cshq_total) %>%
+  dplyr::select(c("PC1_lwas_ASD", "PC1_lwas_IQDQ", "PC1_lwas_sleep", "pgs_asd", "pgs_iq", "pgs_sleepduration"))
+
+ggpairs(lipids_pca_pgs)
+
+# PGS
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwasPC1_pgs_asd_iqdq_sleep.svg", height = 7, width = 7)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwasPC1_pgs_asd_iqdq_sleep.png", height = 7, width = 7)
+
+lipids_trait_pgs <- pheno %>% 
+  mutate(ASD = as.factor(ASD)) %>%
+  mutate(IQ_DQ = iq_dq_wisccomp_mselnv_nih) %>%
+  mutate(sleep = sleep_cshq_total) %>%
+  dplyr::select(c("ASD", "IQ_DQ", "sleep", "pgs_asd", "pgs_iq", "pgs_sleepduration"))
+
+ggpairs(lipids_trait_pgs)
+
+# PGS
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/trait_pgs_asd_iqdq_sleep.svg", height = 7, width = 7)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/trait_pgs_asd_iqdq_sleep.png", height = 7, width = 7)
+
+sleep_assoc <- pheno %>% 
+  left_join(., lipid_pca_asd, by = "IID") %>%
+  left_join(., lipid_pca_iqdq, by = "IID") %>%
+  left_join(., lipid_pca_sleep, by = "IID") %>%
+  mutate(ASD = as.factor(ASD)) %>%
+  mutate(IQ_DQ = iq_dq_wisccomp_mselnv_nih) %>%
+  mutate(sleep = sleep_cshq_total) %>%
+  dplyr::select(c("PC1_lwas_sleep", "sleep_cshq_total", "ASD", "IQ_DQ", "pgs_asd", "pgs_iq", "pgs_sleepduration", "PC1_diet_pe", "PC3_diet_pe"))
+
+summary(lm(PC1_lwas_sleep ~ sleep_cshq_total + ASD + IQ_DQ + pgs_asd + pgs_iq + pgs_sleepduration + PC1_diet_pe + PC3_diet_pe, data = sleep_assoc))
+
+#ggpairs(sleep_assoc)
+
+```
+
+**Lipids to PC loadings + annotation**
+
+- obtain loadings + map onto annotations
+
+```{r}
+
+# Format PCA files
+lipid_pca_asd_lipid_rot <- data.frame(readRDS(paste(lwas_dir, "/lipids_", transform_choice, "_rmstoragepre_asd_covdemo.logistic", ".sigpca.rds", sep = ""))$rotation)
+lipid_pca_asd_loadings <- data.frame(Lipid.species_header = rownames(lipid_pca_asd_lipid_rot), 
+                                  PC1_lwas_ASD = lipid_pca_asd_lipid_rot$PC1 * -1) %>%
+  inner_join(anno %>% select(-"Order"), ., by = "Lipid.species_header") %>%
+  pivot_longer(., "PC1_lwas_ASD", names_to = "Pheno", values_to = "loading")
+
+lipid_pca_iqdq_lipid_rot <- data.frame(readRDS(paste(lwas_dir, "/lipids_", transform_choice, "_iqdq_covdemo.linear", ".sigpca.rds", sep = ""))$rotation)
+lipid_pca_iqdq_loadings <- data.frame(Lipid.species_header = rownames(lipid_pca_iqdq_lipid_rot), 
+                                  PC1_lwas_IQDQ = lipid_pca_iqdq_lipid_rot$PC1 * 1) %>%
+  inner_join(anno %>% select(-"Order"), ., by = "Lipid.species_header") %>%
+  pivot_longer(., "PC1_lwas_IQDQ", names_to = "Pheno", values_to = "loading")
+
+lipid_pca_sleep_lipid_rot <- data.frame(readRDS(paste(lwas_dir, "/lipids_", transform_choice, "_sleep_covdemo.linear", ".sigpca.rds", sep = ""))$rotation)
+lipid_pca_sleep_loadings <- data.frame(Lipid.species_header = rownames(lipid_pca_sleep_lipid_rot), 
+                                  PC1_lwas_sleep = lipid_pca_sleep_lipid_rot$PC1 * -1) %>%
+  inner_join(anno %>% select(-"Order"), ., by = "Lipid.species_header") %>%
+  pivot_longer(., "PC1_lwas_sleep", names_to = "Pheno", values_to = "loading")
+
+lipid_pca_neurodev_loadings <- rbind(lipid_pca_asd_loadings, lipid_pca_iqdq_loadings, lipid_pca_sleep_loadings)
+
+# Read in and clean LSEA annotations
+lsea_anno <- read.csv("~/Documents/Research/ASD/Data/5_metabolomics/Baker/2022_05_01_Autism_Annotation_Updated_KH.csv", header = F, as.is = T)
+#lsea_anno <- read.csv("/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/ids_gsea_ADNI.csv", header = F, as.is = T)
+
+# Change names to match those in the dataframes
+lsea_anno_header <- as.matrix(lsea_anno[,3:ncol(lsea_anno)])
+rownames(lsea_anno_header) <- lsea_anno$V2
+lsea_anno_header <- gsub("[^[:alnum:] ]", ".", lsea_anno_header)
+lsea_anno_header <- gsub(" ", ".", lsea_anno_header)
+lsea_anno_header.ls <- split(lsea_anno_header, f = rownames(lsea_anno_header))
+lsea_anno_header.ls <- lapply(lsea_anno_header.ls, function(x) x[which(x != "")])
+
+# Prep for lipid x pathway plot
+# lipid by pathway plot
+foo <- lapply(lsea_anno_header.ls, function(x) x[which(x %in% lipid_pca_neurodev_loadings$Lipid.species_header)])
+rm_list <- unlist(lapply(foo, length))
+goo <- foo[-which(rm_list == 0)]
+lwas_anno_pathway <- do.call(rbind, lapply(1:length(goo), function(i) data.frame(pathway = names(goo)[i], Lipid.species_header = goo[[i]])))
+
+# Get colour palette
+myPalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
+
+lipid_pca_neurodev_loadings %>%
+  full_join(., lwas_anno_pathway) %>%
+  mutate(pathway = as.character(pathway)) %>%
+  mutate(Set = unlist(lapply(strsplit(pathway, " - "), function(x) x[1]))) %>%
+  mutate(Pathway = unlist(lapply(strsplit(pathway, " - "), function(x) x[2])) %>% trimws()) %>%
+  mutate(MatchSet = match(Set, c("Domain", "Class", "Subclass", "Feature"))) %>%
+  mutate(Set = fct_reorder(Set, MatchSet)) %>%
+  mutate(Pathway = fct_rev(Pathway)) %>%
+  group_by(Pheno) %>%
+  ggplot(., aes(x = Lipid.species, y = Pathway)) +
+  geom_tile(aes(fill = loading), colour = "white") +
+  scale_fill_gradientn(colours = myPalette(100), name = "loadings") +
+  theme_bw() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  facet_grid(Set ~ Pheno, scales = "free", space = "free") + 
+  xlab("Lipid species (LWAS hits)") + ylab("Pathway")
+
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwas_hits_PClwasloadings_asd_iqdq_sleep.svg", height = 7, width = 9)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwas_hits_PClwasloadings_asd_iqdq_sleep.png", height = 7, width = 9)
+
+```
+
+## Association with VABS
+
+```{r}
+
+vabs_assoc <- pheno %>% 
+  left_join(., lipid_pca_asd, by = "IID") %>%
+  left_join(., lipid_pca_iqdq, by = "IID") %>%
+  left_join(., lipid_pca_sleep, by = "IID") %>%
+  mutate(ASD = as.factor(ASD)) %>%
+  mutate(IQ_DQ = iq_dq_wisccomp_mselnv_nih) %>%
+  mutate(sleep = sleep_cshq_total) %>%
+  dplyr::select(c("PC1_lwas_sleep", "PC1_lwas_IQDQ", "sleep_cshq_total", "ASD", "IQ_DQ", "vabs_comp_standard"))
+
+# Assoc between VABS and IQ/DQ and sleep (all participants with VABS are in ASD group, so don't test)
+summary(lm(vabs_comp_standard ~ IQ_DQ + sleep_cshq_total, data = vabs_assoc))
+summary(lm(vabs_comp_standard ~ IQ_DQ, data = vabs_assoc))
+summary(lm(vabs_comp_standard ~ sleep_cshq_total, data = vabs_assoc))
+
+# - does lipid profile add info relationship between sleep and VABS
+ggplot(vabs_assoc, aes(x = PC1_lwas_sleep, y = vabs_comp_standard, colour = sleep_cshq_total)) + geom_point() + geom_smooth(method = "lm")
+tidy(aov(vabs_comp_standard ~ PC1_lwas_sleep, data = vabs_assoc)) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+tidy(aov(vabs_comp_standard ~ sleep_cshq_total + PC1_lwas_sleep, data = vabs_assoc)) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+# - does lipid profile add info relationship between IQ/DQ and VABS
+ggplot(vabs_assoc, aes(x = PC1_lwas_IQDQ, y = vabs_comp_standard, colour = IQ_DQ)) + geom_point() + geom_smooth(method = "lm")
+tidy(aov(vabs_comp_standard ~ PC1_lwas_IQDQ, data = vabs_assoc)) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+tidy(aov(vabs_comp_standard ~ IQ_DQ + PC1_lwas_IQDQ, data = vabs_assoc)) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+```
+
+## Sensitivity analyses for medications
+
+- medications don't affect associations between ASD diagnosis and sleep
+- adhd/behavioural medications are associated with IQ/DQ and sleep problems lipidome profiles
+
+```{r}
+
+meds_sensitivity <- pheno %>% 
+  left_join(., lipid_pca_asd, by = "IID") %>%
+  left_join(., lipid_pca_iqdq, by = "IID") %>%
+  left_join(., lipid_pca_sleep, by = "IID") %>%
+  mutate(ASD = as.factor(ASD)) %>%
+  mutate(IQ_DQ = iq_dq_wisccomp_mselnv_nih) %>%
+  mutate(sleep = sleep_cshq_total) %>%
+  dplyr::select(c("PC1_lwas_ASD", "PC1_lwas_IQDQ", "PC1_lwas_sleep", "ASD", "IQ_DQ", "sleep", "meds_adhd_behavioural", "meds_antipsychotic", "meds_anxiety_depression", "meds_epilepsy_seizures", "cam_fishoil_dha", "meds_cam_sleep", "bmiz", "age", "age2", "sex"))
+
+# - relation between the trait and medications
+summary(glm(ASD ~ as.factor(meds_adhd_behavioural), data = meds_sensitivity %>% mutate(meds_adhd_behavioural = ifelse(meds_adhd_behavioural == 1, 1, 0)), family = binomial(link = "logit")))
+summary(glm(ASD ~ as.factor(meds_antipsychotic), data = meds_sensitivity %>% mutate(meds_antipsychotic = ifelse(meds_antipsychotic == 1, 1, 0)), family = binomial(link = "logit")))
+summary(glm(ASD ~ as.factor(meds_anxiety_depression), data = meds_sensitivity %>% mutate(meds_anxiety_depression = ifelse(meds_anxiety_depression == 1, 1, 0)), family = binomial(link = "logit")))
+summary(glm(ASD ~ as.factor(meds_epilepsy_seizures), data = meds_sensitivity %>% mutate(meds_epilepsy_seizures = ifelse(meds_epilepsy_seizures == 1, 1, 0)), family = binomial(link = "logit")))
+summary(glm(ASD ~ as.factor(meds_cam_sleep), data = meds_sensitivity %>% mutate(meds_cam_sleep = ifelse(meds_cam_sleep == 1, 1, 0)), family = binomial(link = "logit")))
+summary(glm(ASD ~ as.factor(cam_fishoil_dha), data = meds_sensitivity %>% mutate(cam_fishoil_dha = ifelse(cam_fishoil_dha == 1, 1, 0)), family = binomial(link = "logit")))
+
+summary(lm(IQ_DQ ~ as.factor(meds_adhd_behavioural), data = meds_sensitivity %>% mutate(meds_adhd_behavioural = ifelse(meds_adhd_behavioural == 1, 1, 0))))
+summary(lm(IQ_DQ ~ as.factor(meds_antipsychotic), data = meds_sensitivity %>% mutate(meds_antipsychotic = ifelse(meds_antipsychotic == 1, 1, 0))))
+summary(lm(IQ_DQ ~ as.factor(meds_anxiety_depression), data = meds_sensitivity %>% mutate(meds_anxiety_depression = ifelse(meds_anxiety_depression == 1, 1, 0))))
+summary(lm(IQ_DQ ~ as.factor(meds_epilepsy_seizures), data = meds_sensitivity %>% mutate(meds_epilepsy_seizures = ifelse(meds_epilepsy_seizures == 1, 1, 0))))
+summary(lm(IQ_DQ ~ as.factor(meds_cam_sleep), data = meds_sensitivity %>% mutate(meds_cam_sleep = ifelse(meds_cam_sleep == 1, 1, 0))))
+summary(lm(IQ_DQ ~ as.factor(cam_fishoil_dha), data = meds_sensitivity %>% mutate(cam_fishoil_dha = ifelse(cam_fishoil_dha == 1, 1, 0))))
+
+summary(lm(sleep ~ as.factor(meds_adhd_behavioural), data = meds_sensitivity %>% mutate(meds_adhd_behavioural = ifelse(meds_adhd_behavioural == 1, 1, 0))))
+summary(lm(sleep ~ as.factor(meds_antipsychotic), data = meds_sensitivity %>% mutate(meds_antipsychotic = ifelse(meds_antipsychotic == 1, 1, 0))))
+summary(lm(sleep ~ as.factor(meds_anxiety_depression), data = meds_sensitivity %>% mutate(meds_anxiety_depression = ifelse(meds_anxiety_depression == 1, 1, 0))))
+summary(lm(sleep ~ as.factor(meds_epilepsy_seizures), data = meds_sensitivity %>% mutate(meds_epilepsy_seizures = ifelse(meds_epilepsy_seizures == 1, 1, 0))))
+summary(lm(sleep ~ as.factor(meds_cam_sleep), data = meds_sensitivity %>% mutate(meds_cam_sleep = ifelse(meds_cam_sleep == 1, 1, 0))))
+summary(lm(sleep ~ as.factor(cam_fishoil_dha), data = meds_sensitivity %>% mutate(cam_fishoil_dha = ifelse(cam_fishoil_dha == 1, 1, 0))))
+
+summary(lm(bmiz ~ age + age2 + sex + as.factor(meds_adhd_behavioural), data = meds_sensitivity %>% mutate(meds_adhd_behavioural = ifelse(meds_adhd_behavioural == 1, 1, 0))))
+summary(lm(bmiz ~ age + age2 + sex + as.factor(meds_antipsychotic), data = meds_sensitivity %>% mutate(meds_antipsychotic = ifelse(meds_antipsychotic == 1, 1, 0))))
+summary(lm(bmiz ~ age + age2 + sex + as.factor(meds_anxiety_depression), data = meds_sensitivity %>% mutate(meds_anxiety_depression = ifelse(meds_anxiety_depression == 1, 1, 0))))
+summary(lm(bmiz ~ age + age2 + sex + as.factor(meds_cam_sleep), data = meds_sensitivity %>% mutate(meds_cam_sleep = ifelse(meds_cam_sleep == 1, 1, 0))))
+summary(lm(bmiz ~ age + age2 + sex + as.factor(cam_fishoil_dha), data = meds_sensitivity %>% mutate(cam_fishoil_dha = ifelse(cam_fishoil_dha == 1, 1, 0))))
+
+summary(lm(sleep ~ as.factor(meds_adhd_behavioural) + PC1_lwas_sleep, data = meds_sensitivity %>% mutate(meds_adhd_behavioural = ifelse(meds_adhd_behavioural == 1, 1, 0))))
+summary(lm(IQ_DQ ~ as.factor(meds_adhd_behavioural) + PC1_lwas_IQDQ, data = meds_sensitivity %>% mutate(meds_adhd_behavioural = ifelse(meds_adhd_behavioural == 1, 1, 0))))
+
+# - follow up sleep results: include those with current medications in model
+summary(lm(PC1_lwas_ASD ~ ASD, data = meds_sensitivity))
+summary(lm(PC1_lwas_ASD ~ as.factor(meds_adhd_behavioural), data = meds_sensitivity))
+summary(lm(PC1_lwas_ASD ~ as.factor(meds_antipsychotic), data = meds_sensitivity))
+summary(lm(PC1_lwas_ASD ~ as.factor(meds_anxiety_depression), data = meds_sensitivity %>% mutate(meds_anxiety_depression = ifelse(meds_anxiety_depression == 1, 1, 0))))
+summary(lm(PC1_lwas_ASD ~ ASD + as.factor(meds_anxiety_depression), data = meds_sensitivity %>% mutate(meds_anxiety_depression = ifelse(meds_anxiety_depression == 1, 1, 0))))
+summary(lm(PC1_lwas_ASD ~ as.factor(meds_epilepsy_seizures), data = meds_sensitivity))
+summary(lm(PC1_lwas_ASD ~ as.factor(meds_cam_sleep), data = meds_sensitivity))
+summary(lm(PC1_lwas_ASD ~ as.factor(cam_fishoil_dha), data = meds_sensitivity))
+
+summary(lm(PC1_lwas_IQDQ ~ IQ_DQ, data = meds_sensitivity))
+summary(lm(PC1_lwas_IQDQ ~ IQ_DQ + as.factor(meds_adhd_behavioural), data = meds_sensitivity))
+summary(lm(PC1_lwas_IQDQ ~ as.factor(meds_adhd_behavioural), data = meds_sensitivity %>% mutate(meds_adhd_behavioural = ifelse(meds_adhd_behavioural == 1, 1, 0))))
+summary(lm(PC1_lwas_IQDQ ~ IQ_DQ + as.factor(meds_adhd_behavioural), data = meds_sensitivity %>% mutate(meds_adhd_behavioural = ifelse(meds_adhd_behavioural == 1, 1, 0)))) ##### THIS ONE
+summary(lm(PC1_lwas_IQDQ ~ as.factor(meds_antipsychotic), data = meds_sensitivity))
+summary(lm(PC1_lwas_IQDQ ~ as.factor(meds_anxiety_depression), data = meds_sensitivity))
+summary(lm(PC1_lwas_IQDQ ~ as.factor(meds_epilepsy_seizures), data = meds_sensitivity))
+summary(lm(PC1_lwas_IQDQ ~ as.factor(meds_cam_sleep), data = meds_sensitivity))
+summary(lm(PC1_lwas_IQDQ ~ as.factor(cam_fishoil_dha), data = meds_sensitivity))
+
+summary(lm(PC1_lwas_sleep ~ sleep, data = meds_sensitivity))
+summary(lm(PC1_lwas_sleep ~ sleep + as.factor(meds_adhd_behavioural), data = meds_sensitivity))
+summary(lm(PC1_lwas_sleep ~ as.factor(meds_adhd_behavioural), data = meds_sensitivity %>% mutate(meds_adhd_behavioural = ifelse(meds_adhd_behavioural == 1, 1, 0))))
+summary(lm(PC1_lwas_sleep ~ sleep + as.factor(meds_adhd_behavioural), data = meds_sensitivity %>% mutate(meds_adhd_behavioural = ifelse(meds_adhd_behavioural == 1, 1, 0)))) ##### THIS ONE
+summary(lm(PC1_lwas_sleep ~ as.factor(meds_antipsychotic), data = meds_sensitivity))
+summary(lm(PC1_lwas_sleep ~ as.factor(meds_anxiety_depression), data = meds_sensitivity))
+summary(lm(PC1_lwas_sleep ~ as.factor(meds_epilepsy_seizures), data = meds_sensitivity))
+summary(lm(PC1_lwas_sleep ~ as.factor(meds_cam_sleep), data = meds_sensitivity))
+summary(lm(PC1_lwas_sleep ~ as.factor(cam_fishoil_dha), data = meds_sensitivity))
+summary(lm(PC1_lwas_sleep ~ sleep + as.factor(cam_fishoil_dha), data = meds_sensitivity))
+
+tidy(aov(PC1_lwas_IQDQ ~ IQ_DQ + as.factor(meds_adhd_behavioural), data = meds_sensitivity)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(PC1_lwas_IQDQ ~ IQ_DQ + as.factor(meds_adhd_behavioural), data = meds_sensitivity %>% mutate(meds_adhd_behavioural = ifelse(meds_adhd_behavioural == 1, 1, 0)))) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) ##### THIS ONE
+#tidy(aov(PC1_lwas_IQDQ ~ IQ_DQ + as.factor(meds_adhd_behavioural), data = meds_sensitivity %>% filter(meds_adhd_behavioural %in% 0:1))) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+#tidy(aov(PC1_lwas_IQDQ ~ IQ_DQ + as.factor(meds_adhd_behavioural), data = meds_sensitivity %>% mutate(meds_adhd_behavioural = ifelse(meds_adhd_behavioural == 0, 0, 1)))) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(PC1_lwas_sleep ~ sleep + as.factor(meds_adhd_behavioural), data = meds_sensitivity)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(PC1_lwas_sleep ~ sleep + as.factor(meds_adhd_behavioural), data = meds_sensitivity %>% mutate(meds_adhd_behavioural = ifelse(meds_adhd_behavioural == 1, 1, 0)))) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) ##### THIS ONE
+tidy(aov(PC1_lwas_sleep ~ sleep + as.factor(cam_fishoil_dha), data = meds_sensitivity %>% mutate(cam_fishoil_dha = ifelse(cam_fishoil_dha == 1, 1, 0)))) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) ##### THIS ONE
+#tidy(aov(PC1_lwas_sleep ~ sleep + as.factor(meds_adhd_behavioural), data = meds_sensitivity %>% mutate(meds_adhd_behavioural = ifelse(meds_adhd_behavioural == 0, 0, 1)))) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+
+summary(lm(sleep ~ PC1_lwas_sleep + as.factor(meds_adhd_behavioural), data = meds_sensitivity %>% mutate(meds_adhd_behavioural = ifelse(meds_adhd_behavioural == 1, 1, 0))))
+summary(lm(IQ_DQ ~ PC1_lwas_IQDQ + as.factor(meds_adhd_behavioural), data = meds_sensitivity %>% mutate(meds_adhd_behavioural = ifelse(meds_adhd_behavioural == 1, 1, 0))))
+
+ggplot(meds_sensitivity %>% mutate(meds_adhd_behavioural = ifelse(meds_adhd_behavioural == 0, "0", "1")) , aes(x = sleep, y = PC1_lwas_sleep, colour = meds_adhd_behavioural)) + geom_point() + geom_smooth(method = "lm")
+ggplot(meds_sensitivity %>% mutate(meds_adhd_behavioural = ifelse(meds_adhd_behavioural == 0, "0", "1")) , aes(x = IQ_DQ, y = PC1_lwas_IQDQ, colour = meds_adhd_behavioural)) + geom_point() + geom_smooth(method = "lm")
+ggplot(meds_sensitivity, aes(x = sleep, y = PC1_lwas_sleep, colour = as.factor(cam_fishoil_dha))) + geom_point() + geom_smooth(method = "lm")
+
+```
+
+# LWAS hit PCs to diet
+
+```{r}
+lwas_dir <- "~/Documents/Research/ASD/Output/5_metabolomics/analysis/osca/assoc"
+transform_choice <- "int"
+```
+
+## ASD lipid species
+
+```{r}
+
+lipid_pca <- readRDS(paste(lwas_dir, "/lipids_", transform_choice, "_rmstoragepre_asd_covdemo.logistic", ".sigpca.rds", sep = ""))
+
+tmp <- lipid_pca$sdev^2/sum(lipid_pca$sdev^2)
+lipid_pca_var <- data.frame(PC = 1:length(tmp), variance = tmp, cumsum = cumsum(tmp))
+datatable(lipid_pca_var)
+
+ggplot(lipid_pca_var, aes(x = PC, y = variance*100)) +
+  geom_bar(stat = "identity", position=position_dodge()) +
+  ylab("Variance (%)") + xlab("ASD LWAS hit PC")
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwas_hit_pc_scree_asd.png", height = 4.5, width = 4.5)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwas_hit_pc_scree_asd.svg", height = 4.5, width = 4.5)
+
+# - reverse LWAS hit PC1 so that direction matches with diagnosis
+lipid_pcs <- data.frame(IID = as.numeric(rownames(lipid_pca$x)), lipid_pca$x * -1)
+colnames(lipid_pcs)[grep("PC", colnames(lipid_pcs))] <- paste("lwas_hit_", colnames(lipid_pcs)[grep("PC", colnames(lipid_pcs))], sep = "")
+
+pheno_lipid_pcs <- inner_join(pheno, lipid_pcs, by = "IID")
+
+# Add ASD_LWAS_PC1 to broader pheno file
+tmp <- data.frame(IID = lipid_pcs$IID, ASD_LWAS_PC1 = lipid_pcs$lwas_hit_PC1)
+pheno_lipid_pcs_all <- inner_join(pheno, tmp)
+
+# Baseline model
+summary(lm(lwas_hit_PC1 ~ as.factor(ASD), data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC2 ~ as.factor(ASD), data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~ pgs_asd, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~  ASD + age + age2 + sex + Batch + InjectionOrder + storage_blood_days, data = pheno_lipid_pcs))
+
+# Association between ASD lipidome profile and dietary PCs
+summary(lm(lwas_hit_PC1 ~ PC1_diet_pe, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~ PC2_diet_pe, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~ PC3_diet_pe, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~  PC3_diet_pe + age + age2 + sex + Batch + InjectionOrder + storage_blood_days, data = pheno_lipid_pcs))
+
+# Sensitivity analysis for adding storage_blood_days
+summary(lm(lwas_hit_PC1 ~  PC3_diet_pe + age + age2 + sex + ASD + Batch + InjectionOrder + storage_blood_days, data = pheno_lipid_pcs))
+
+# Sensitivity analysis for adding cholesterol and triglycerides
+summary(lm(lwas_hit_PC1 ~  PC3_diet_pe + age + age2 + sex + ASD + Batch + InjectionOrder + storage_blood_days + cholesterol_lipidome, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~  PC3_diet_pe + age + age2 + sex + ASD + Batch + InjectionOrder + storage_blood_days + triglycerides_lipidome, data = pheno_lipid_pcs))
+
+# Sensitivity analysis for adding DHA use
+summary(lm(lwas_hit_PC1 ~  PC3_diet_pe + age + sex + ASD + Batch + InjectionOrder + cam_fishoil_dha, data = pheno_lipid_pcs))
+
+# Sensitivity analysis for adding other dietary variables
+summary(lm(lwas_hit_PC1 ~  PC3_diet_pe + cholesterol + energy + age + sex + ASD + Batch + InjectionOrder, data = pheno_lipid_pcs)) # this is testing for dietary cholesterol
+summary(lm(lwas_hit_PC1 ~  pefats + age + sex + ASD + Batch + InjectionOrder, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~  cholesterol + energy + age + age2 + sex + ASD + Batch + InjectionOrder + storage_blood_days, data = pheno_lipid_pcs))
+
+# Explore more the association between ASD, the ASD lipidome profile and dietary PC3
+summary(lm(lwas_hit_PC1 ~  PC3_diet_pe, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~  ASD, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~  PC3_diet_pe + ASD, data = pheno_lipid_pcs))
+summary(lm(PC3_diet_pe ~  ASD, data = pheno_lipid_pcs))
+
+# - conditional analysis for ASD hits, conditioning on sleep problems (ie. do sleep problems drive the association?)
+tidy(aov(lwas_hit_PC1 ~ age + sex + Batch + InjectionOrder + collection_blood_time_cos + storage_blood_days + as.factor(ASD), data = pheno_lipid_pcs)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(lwas_hit_PC1 ~ age + sex + Batch + InjectionOrder + collection_blood_time_cos + storage_blood_days + as.factor(ASD), data = pheno_lipid_pcs %>% filter(!is.na(sleep_cshq_total)))) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(lwas_hit_PC1 ~ age + sex + Batch + InjectionOrder + collection_blood_time_cos + storage_blood_days + sleep_cshq_total + as.factor(ASD), data = pheno_lipid_pcs)) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+
+tmp <- pheno_lipid_pcs %>% dplyr::select(c("lwas_hit_PC1", "ASD", "PC3_diet_pe")) %>% mutate(ASD = as.factor(ASD))
+# https://stackoverflow.com/questions/35085261/how-to-use-loess-method-in-ggallyggpairs-using-wrap-function/35088740
+# Function to return points and geom_smooth
+# allow for the method to be changed
+add_loess <- function(data, mapping, method="loess", ...){
+      p <- ggplot(data = data, mapping = mapping) + 
+      geom_point() + 
+      geom_smooth(method=method, ...)
+      p
+    }
+ggpairs(tmp, lower = list(continuous = wrap(add_loess, method="lm")), columnLabels = c("LWAS hits PC1", "ASD", "diet PC3 (meat)"))
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwasPC1_asd_diet.svg", height = 4.5, width = 4.5)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwasPC1_asd_diet.png", height = 4.5, width = 4.5)
+
+# Add total cholesterol #####
+tmp <- pheno_lipid_pcs %>% dplyr::select(c("lwas_hit_PC1", "ASD", "PC3_diet_pe", "cholesterol_lipidome")) %>% mutate(ASD = as.factor(ASD))
+ggpairs(tmp, lower = list(continuous = wrap(add_loess, method="lm")), columnLabels = c("LWAS hits PC1", "ASD", "diet PC3 (meat)", "cholesterol"))
+
+ggduo(pheno_lipid_pcs %>% mutate(ASD = as.factor(ASD)) %>% mutate(Batch = as.factor(Batch)) %>% mutate(IQ_DQ = iq_dq_wisccomp_mselnv_nih) %>% mutate(sleep = sleep_cshq_total) %>% mutate(Order = InjectionOrder) %>% mutate(storage = storage_blood_days) %>% mutate(time = collection_blood_time) %>% mutate(dietPC1 = PC1_diet_pe) %>% mutate(dietPC2 = PC2_diet_pe) %>% mutate(dietPC3 = PC3_diet_pe) %>% mutate(TC = cholesterol_lipidome) %>% mutate(TG = triglycerides_lipidome), 
+      c("ASD", "dietPC1", "dietPC2", "dietPC3", "IQ_DQ", "sleep", "age", "age2", "sex", "Batch", "Order", "storage", "time", "TC", "TG"),
+      c("lwas_hit_PC1", "lwas_hit_PC2", "lwas_hit_PC3", "lwas_hit_PC4", "lwas_hit_PC5"))
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwasPC_asd_vs_covariates.png", height = 8, width = 8)
+
+ggduo(pheno_lipid_pcs %>% mutate(ASD = as.factor(ASD)) %>% mutate(Batch = as.factor(Batch)) %>% mutate(IQ_DQ = iq_dq_wisccomp_mselnv_nih) %>% mutate(sleep = sleep_cshq_total) %>% mutate(Order = InjectionOrder) %>% mutate(storage = storage_blood_days) %>% mutate(time = collection_blood_time) %>% mutate(dietPC1 = PC1_diet_pe) %>% mutate(dietPC2 = PC2_diet_pe) %>% mutate(dietPC3 = PC3_diet_pe) %>% mutate(TC = cholesterol_lipidome) %>% mutate(TG = triglycerides_lipidome), 
+      c("ASD", "dietPC1", "dietPC2", "dietPC3", "IQ_DQ", "sleep", "TC", "TG"),
+      c("lwas_hit_PC1", "lwas_hit_PC2", "lwas_hit_PC3", "lwas_hit_PC4", "lwas_hit_PC5"))
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwasPC_asd_vs_covariates_part1.png", height = 8, width = 8)
+
+ggduo(pheno_lipid_pcs %>% mutate(ASD = as.factor(ASD)) %>% mutate(Batch = as.factor(Batch)) %>% mutate(IQ_DQ = iq_dq_wisccomp_mselnv_nih) %>% mutate(sleep = sleep_cshq_total) %>% mutate(Order = InjectionOrder) %>% mutate(storage = storage_blood_days) %>% mutate(time = collection_blood_time) %>% mutate(dietPC1 = PC1_diet_pe) %>% mutate(dietPC2 = PC2_diet_pe) %>% mutate(dietPC3 = PC3_diet_pe) %>% mutate(TC = cholesterol_lipidome) %>% mutate(TG = triglycerides_lipidome), 
+      c("age", "age2", "sex", "Batch", "Order", "storage", "time"),
+      c("lwas_hit_PC1", "lwas_hit_PC2", "lwas_hit_PC3", "lwas_hit_PC4", "lwas_hit_PC5"))
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwasPC_asd_vs_covariates_part2.png", height = 8, width = 8)
+
+```
+
+### Model fit
+
+```{r}
+
+# Variance component analysis
+# Sensitivity analysis comparing effect of adding dietary PC3 to the model
+tidy(aov(lm(lwas_hit_PC1 ~ age + age2 + as.factor(sex) + Batch + InjectionOrder + as.factor(ASD) + PC3_diet_pe, data = pheno_lipid_pcs))) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(lm(lwas_hit_PC1 ~ age + age2 + as.factor(sex) + Batch + InjectionOrder + as.factor(ASD), data = pheno_lipid_pcs))) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+
+```
+
+## IQ/DQ lipid species
+
+- LWAS hits PC1 is strongly associated with IQ/DQ
+- LWAS hits PC1 is assoc with dietary PC1 (and not other dietary variables)
+- dietary PC1 is not assoc with IQ directly ...
+- suggests: dietary PC1 <=> LWAS hits for IQ/DQ <=> IQ/DQ score
+
+```{r}
+
+lipid_pca <- readRDS(paste(lwas_dir, "/lipids_", transform_choice, "_iqdq_covdemo.linear", ".sigpca.rds", sep = ""))
+
+tmp <- lipid_pca$sdev^2/sum(lipid_pca$sdev^2)
+lipid_pca_var <- data.frame(PC = 1:length(tmp), variance = tmp, cumsum = cumsum(tmp))
+datatable(lipid_pca_var)
+
+ggplot(lipid_pca_var, aes(x = PC, y = variance*100)) +
+  geom_bar(stat = "identity", position=position_dodge()) +
+  ylab("Variance (%)") + xlab("IQ/DQ LWAS hit PC")
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwas_hit_pc_scree_iqdq.png", height = 4.5, width = 4.5)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwas_hit_pc_scree_iqdq.svg", height = 4.5, width = 4.5)
+
+# - DO NOT reverse LWAS hit PC1 for IQ/DQ
+lipid_pcs <- data.frame(IID = as.numeric(rownames(lipid_pca$x)), lipid_pca$x)
+colnames(lipid_pcs)[grep("PC", colnames(lipid_pcs))] <- paste("lwas_hit_", colnames(lipid_pcs)[grep("PC", colnames(lipid_pcs))], sep = "")
+
+pheno_lipid_pcs <- inner_join(pheno, lipid_pcs, by = "IID")
+
+# Add IQDQ_LWAS_PC1 to broader pheno file
+tmp <- data.frame(IID = lipid_pcs$IID, IQDQ_LWAS_PC1 = lipid_pcs$lwas_hit_PC1)
+pheno_lipid_pcs_all <- inner_join(pheno_lipid_pcs_all, tmp)
+
+# Baseline model
+summary(lm(lwas_hit_PC1 ~ iq_dq_wisccomp_mselnv_nih, data = pheno_lipid_pcs))
+
+# Sensitivtiy analyses for dietary variables
+summary(lm(lwas_hit_PC1 ~ PC1_diet_pe, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~ PC2_diet_pe, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~ PC3_diet_pe, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~ PC1_diet_pe + age + age2 + sex + Batch + InjectionOrder + storage_blood_days, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~  PC1_diet_pe + age + age2 + sex + iq_dq_wisccomp_mselnv_nih + Batch + InjectionOrder + storage_blood_days, data = pheno_lipid_pcs))
+
+# Sensitivity analyses for medications
+summary(lm(lwas_hit_PC1 ~  PC1_diet_pe + age + age2 + sex + iq_dq_wisccomp_mselnv_nih + Batch + InjectionOrder + cam_fishoil_dha, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~  PC1_diet_pe + age + age2 + sex + iq_dq_wisccomp_mselnv_nih + Batch + InjectionOrder, data = pheno_lipid_pcs %>% filter(!IID %in% rm_dha)))
+
+# Sensitivity analyses for total cholesterol
+summary(lm(lwas_hit_PC1 ~  PC1_diet_pe + age + age2 + sex + iq_dq_wisccomp_mselnv_nih + Batch + InjectionOrder + storage_blood_days + cholesterol_lipidome, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~  PC1_diet_pe + age + age2 + sex + iq_dq_wisccomp_mselnv_nih + Batch + InjectionOrder + storage_blood_days + triglycerides_lipidome, data = pheno_lipid_pcs))
+
+summary(lm(lwas_hit_PC1 ~ iq_dq_wisccomp_mselnv_nih, data = pheno_lipid_pcs %>% filter(!is.na(PC1_diet_pe))))
+summary(lm(lwas_hit_PC1 ~ pgs_iq, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~ PC1_diet_pe, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~ PC1_diet_pe + iq_dq_wisccomp_mselnv_nih, data = pheno_lipid_pcs)) # 
+tmp <- pheno_lipid_pcs %>% dplyr::select(c("lwas_hit_PC1", "iq_dq_wisccomp_mselnv_nih", "PC1_diet_pe"))
+# https://stackoverflow.com/questions/35085261/how-to-use-loess-method-in-ggallyggpairs-using-wrap-function/35088740
+# Function to return points and geom_smooth
+# allow for the method to be changed
+add_loess <- function(data, mapping, method="loess", ...){
+      p <- ggplot(data = data, mapping = mapping) + 
+      geom_point() + 
+      geom_smooth(method=method, ...)
+      p
+    }
+ggpairs(tmp, lower = list(continuous = wrap(add_loess, method="lm")), columnLabels = c("LWAS hits PC1", "IQ/DQ", "diet PC1 (plant)"))
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwasPC1_iqdq_diet.svg", height = 4.5, width = 4.5)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwasPC1_iqdq_diet.png", height = 4.5, width = 4.5)
+
+tmp <- pheno_lipid_pcs %>% dplyr::select(c("lwas_hit_PC1", "iq_dq_wisccomp_mselnv_nih", "PC1_diet_pe", "cholesterol_lipidome"))
+ggpairs(tmp, lower = list(continuous = wrap(add_loess, method="lm")), columnLabels = c("LWAS hits PC1", "IQ/DQ", "diet PC1 (plant)", "TC"))
+
+
+ggduo(pheno_lipid_pcs %>% mutate(ASD = as.factor(ASD)) %>% mutate(Batch = as.factor(Batch)) %>% mutate(IQ_DQ = iq_dq_wisccomp_mselnv_nih) %>% mutate(sleep = sleep_cshq_total) %>% mutate(Order = InjectionOrder) %>% mutate(storage = storage_blood_days) %>% mutate(time = collection_blood_time) %>% mutate(dietPC1 = PC1_diet_pe) %>% mutate(dietPC2 = PC2_diet_pe) %>% mutate(dietPC3 = PC3_diet_pe) %>% mutate(TC = cholesterol_lipidome) %>% mutate(TG = triglycerides_lipidome), 
+      c("IQ_DQ", "dietPC1", "dietPC2", "dietPC3", "ASD", "sleep", "age", "age2", "sex", "Batch", "Order", "storage", "time", "TC", "TG"),
+      c("lwas_hit_PC1", "lwas_hit_PC2", "lwas_hit_PC3", "lwas_hit_PC4", "lwas_hit_PC5"))
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwasPC_iqdq_vs_covariates.png", height = 8, width = 8)
+
+ggduo(pheno_lipid_pcs %>% mutate(ASD = as.factor(ASD)) %>% mutate(Batch = as.factor(Batch)) %>% mutate(IQ_DQ = iq_dq_wisccomp_mselnv_nih) %>% mutate(sleep = sleep_cshq_total) %>% mutate(Order = InjectionOrder) %>% mutate(storage = storage_blood_days) %>% mutate(time = collection_blood_time) %>% mutate(dietPC1 = PC1_diet_pe) %>% mutate(dietPC2 = PC2_diet_pe) %>% mutate(dietPC3 = PC3_diet_pe) %>% mutate(TC = cholesterol_lipidome) %>% mutate(TG = triglycerides_lipidome), 
+      c("IQ_DQ", "dietPC1", "dietPC2", "dietPC3", "ASD", "sleep", "TC", "TG"),
+      c("lwas_hit_PC1", "lwas_hit_PC2", "lwas_hit_PC3", "lwas_hit_PC4", "lwas_hit_PC5"))
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwasPC_iqdq_vs_covariates_part1.png", height = 8, width = 8)
+ggduo(pheno_lipid_pcs %>% mutate(ASD = as.factor(ASD)) %>% mutate(Batch = as.factor(Batch)) %>% mutate(IQ_DQ = iq_dq_wisccomp_mselnv_nih) %>% mutate(sleep = sleep_cshq_total) %>% mutate(Order = InjectionOrder) %>% mutate(storage = storage_blood_days) %>% mutate(time = collection_blood_time) %>% mutate(dietPC1 = PC1_diet_pe) %>% mutate(dietPC2 = PC2_diet_pe) %>% mutate(dietPC3 = PC3_diet_pe) %>% mutate(TC = cholesterol_lipidome) %>% mutate(TG = triglycerides_lipidome), 
+      c("age", "age2", "sex", "Batch", "Order", "storage", "time"),
+      c("lwas_hit_PC1", "lwas_hit_PC2", "lwas_hit_PC3", "lwas_hit_PC4", "lwas_hit_PC5"))
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwasPC_iqdq_vs_covariates_part2.png", height = 8, width = 8)
+
+
+```
+
+### Model fit
+
+```{r}
+
+# Variance component analysis
+
+# Sensitivity analysis for the effect on the IQ/DQ lipidome profile if dietary variables associated with the measured IQ/DQ trait are added
+tidy(aov(lm(lwas_hit_PC1 ~ age + age2 + as.factor(sex) + Batch + InjectionOrder + iq_dq_wisccomp_mselnv_nih + PC1_diet_pe, data = pheno_lipid_pcs))) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(lm(lwas_hit_PC1 ~ age + age2 + as.factor(sex) + Batch + InjectionOrder + iq_dq_wisccomp_mselnv_nih, data = pheno_lipid_pcs))) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+
+# Sensitivity analysis for lipidome cholesterol and look at effect of conditioning other variables on this vs putting it at the end
+tidy(aov(lm(lwas_hit_PC1 ~ age + age2 + as.factor(sex) + Batch + InjectionOrder + iq_dq_wisccomp_mselnv_nih + PC1_diet_pe + cholesterol_lipidome, data = pheno_lipid_pcs))) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(lm(lwas_hit_PC1 ~ cholesterol_lipidome + age + age2 + as.factor(sex) + Batch + InjectionOrder + iq_dq_wisccomp_mselnv_nih + PC1_diet_pe, data = pheno_lipid_pcs))) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+
+```
+
+## CSHQ lipid species
+
+- assoc with dietary PC1 and PC3!
+
+```{r}
+
+lipid_pca <- readRDS(paste(lwas_dir, "/lipids_", transform_choice, "_sleep_covdemo.linear", ".sigpca.rds", sep = ""))
+
+tmp <- lipid_pca$sdev^2/sum(lipid_pca$sdev^2)
+lipid_pca_var <- data.frame(PC = 1:length(tmp), variance = tmp, cumsum = cumsum(tmp))
+datatable(lipid_pca_var)
+
+ggplot(lipid_pca_var, aes(x = PC, y = variance*100)) +
+  geom_bar(stat = "identity", position=position_dodge()) +
+  ylab("Variance (%)") + xlab("Sleep problems (CSHQ) LWAS hit PC")
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwas_hit_pc_scree_sleep.png", height = 4.5, width = 4.5)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwas_hit_pc_scree_ sleep.svg", height = 4.5, width = 4.5)
+
+# - reverse LWAS hit PC1 so that direction matches with diagnosis
+lipid_pcs <- data.frame(IID = as.numeric(rownames(lipid_pca$x)), -1 * lipid_pca$x)
+colnames(lipid_pcs)[grep("PC", colnames(lipid_pcs))] <- paste("lwas_hit_", colnames(lipid_pcs)[grep("PC", colnames(lipid_pcs))], sep = "")
+
+pheno_lipid_pcs <- inner_join(pheno, lipid_pcs, by = "IID")
+
+# Add Sleep_LWAS_PC1 to broader pheno file
+tmp <- data.frame(IID = lipid_pcs$IID, Sleep_LWAS_PC1 = lipid_pcs$lwas_hit_PC1)
+pheno_lipid_pcs_all <- inner_join(pheno_lipid_pcs_all, tmp)
+
+summary(lm(lwas_hit_PC1 ~ sleep_cshq_total, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC2 ~ sleep_cshq_total, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~ pgs_chronotype, data = pheno_lipid_pcs))
+
+# Sensitivity analysis to check that LWAS hits aren't driven predominantly by diet
+summary(lm(lwas_hit_PC1 ~ PC1_diet_pe, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~ PC2_diet_pe, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~ PC3_diet_pe, data = pheno_lipid_pcs))
+
+# Sensitivity analysis to check that ASD doesn't driven the sleep lipidome profile
+summary(lm(lwas_hit_PC1 ~ PC1_diet_pe + age + age2 + sex + Batch + InjectionOrder, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~ PC1_diet_pe + age + age2 + sex + ASD + Batch + InjectionOrder, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~ PC3_diet_pe + age + age2 + sex + Batch + InjectionOrder, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~ PC3_diet_pe + age + age2 + sex + ASD + Batch + InjectionOrder, data = pheno_lipid_pcs))
+
+# Sensitivity analysis to check effect or storage_blood_days on sleep lipidome profile
+summary(lm(lwas_hit_PC1 ~ PC1_diet_pe + age + age2 + sex + Batch + InjectionOrder + storage_blood_days, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~ PC3_diet_pe + age + age2 + sex + Batch + InjectionOrder + storage_blood_days, data = pheno_lipid_pcs))
+
+# Sensitivity analysis to check that ASD diagnosis doesn't strongly affect the relationship between sleep problems and the sleep problems lipidome
+summary(lm(lwas_hit_PC1 ~ sleep_cshq_total + PC1_diet_pe + PC3_diet_pe + age + age2 + sex + ASD + Batch + InjectionOrder, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~ sleep_cshq_total + PC1_diet_pe + PC3_diet_pe + age + age2 + sex + ASD + Batch + InjectionOrder + storage_blood_days, data = pheno_lipid_pcs))
+
+# Sensitivity analysis to check the effect of cholesterol and triglycerides
+summary(lm(lwas_hit_PC1 ~ sleep_cshq_total + PC1_diet_pe + PC3_diet_pe + age + age2 + sex + ASD + Batch + InjectionOrder + storage_blood_days + cholesterol_lipidome, data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~ sleep_cshq_total + PC1_diet_pe + PC3_diet_pe + age + age2 + sex + ASD + Batch + InjectionOrder + storage_blood_days + triglycerides_lipidome, data = pheno_lipid_pcs))
+
+# Sensitivity analysis to check that the medications associated with sleep aren't associated with the sleep problems lipidome
+summary(lm(lwas_hit_PC1 ~ sleep_cshq_total + PC1_diet_pe + PC3_diet_pe + age + age2 + sex + ASD + Batch + InjectionOrder + as.factor(cam_fishoil_dha), data = pheno_lipid_pcs))
+summary(lm(lwas_hit_PC1 ~ sleep_cshq_total + PC1_diet_pe + PC3_diet_pe + age + age2 + sex + ASD + Batch + InjectionOrder, data = pheno_lipid_pcs %>% filter(!IID %in% rm_dha)))
+
+tmp <- pheno_lipid_pcs %>% dplyr::select(c("lwas_hit_PC1", "sleep_cshq_total", "PC1_diet_pe", "PC3_diet_pe"))
+# https://stackoverflow.com/questions/35085261/how-to-use-loess-method-in-ggallyggpairs-using-wrap-function/35088740
+# Function to return points and geom_smooth
+# allow for the method to be changed
+add_loess <- function(data, mapping, method="loess", ...){
+      p <- ggplot(data = data, mapping = mapping) + 
+      geom_point() + 
+      geom_smooth(method=method, ...)
+      p
+    }
+ggpairs(tmp, lower = list(continuous = wrap(add_loess, method="lm")), columnLabels = c("LWAS hits PC1", "sleep (CSHQ)", "diet PC1 (plant)", "diet PC3 (meat)"))
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwasPC1_sleep_diet.svg", height = 4.5, width = 4.5)
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwasPC1_sleep_diet.png", height = 4.5, width = 4.5)
+
+ggduo(pheno_lipid_pcs %>% mutate(ASD = as.factor(ASD)) %>% mutate(Batch = as.factor(Batch)) %>% mutate(IQ_DQ = iq_dq_wisccomp_mselnv_nih) %>% mutate(sleep = sleep_cshq_total) %>% mutate(Order = InjectionOrder) %>% mutate(storage = storage_blood_days) %>% mutate(time = collection_blood_time) %>% mutate(dietPC1 = PC1_diet_pe) %>% mutate(dietPC2 = PC2_diet_pe) %>% mutate(dietPC3 = PC3_diet_pe), 
+      c("sleep", "dietPC1", "dietPC2", "dietPC3", "ASD", "IQ_DQ", "age", "age2", "sex", "Batch", "Order", "storage", "time"),
+      c("lwas_hit_PC1", "lwas_hit_PC2", "lwas_hit_PC3", "lwas_hit_PC4", "lwas_hit_PC5"))
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwasPC_sleep_vs_covariates.png", height = 8, width = 8)
+
+ggduo(pheno_lipid_pcs %>% mutate(ASD = as.factor(ASD)) %>% mutate(Batch = as.factor(Batch)) %>% mutate(IQ_DQ = iq_dq_wisccomp_mselnv_nih) %>% mutate(sleep = sleep_cshq_total) %>% mutate(Order = InjectionOrder) %>% mutate(storage = storage_blood_days) %>% mutate(time = collection_blood_time) %>% mutate(dietPC1 = PC1_diet_pe) %>% mutate(dietPC2 = PC2_diet_pe) %>% mutate(dietPC3 = PC3_diet_pe) %>% mutate(TC = cholesterol_lipidome) %>% mutate(TG = triglycerides_lipidome), 
+      c("sleep", "dietPC1", "dietPC2", "dietPC3", "ASD", "IQ_DQ", "TC", "TG"),
+      c("lwas_hit_PC1", "lwas_hit_PC2", "lwas_hit_PC3", "lwas_hit_PC4", "lwas_hit_PC5"))
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwasPC_sleep_vs_covariates_part1.png", height = 8, width = 8)
+ggduo(pheno_lipid_pcs %>% mutate(ASD = as.factor(ASD)) %>% mutate(Batch = as.factor(Batch)) %>% mutate(IQ_DQ = iq_dq_wisccomp_mselnv_nih) %>% mutate(sleep = sleep_cshq_total) %>% mutate(Order = InjectionOrder) %>% mutate(storage = storage_blood_days) %>% mutate(time = collection_blood_time) %>% mutate(dietPC1 = PC1_diet_pe) %>% mutate(dietPC2 = PC2_diet_pe) %>% mutate(dietPC3 = PC3_diet_pe) %>% mutate(TC = cholesterol_lipidome) %>% mutate(TG = triglycerides_lipidome), 
+      c("age", "age2", "sex", "Batch", "Order", "storage", "time"),
+      c("lwas_hit_PC1", "lwas_hit_PC2", "lwas_hit_PC3", "lwas_hit_PC4", "lwas_hit_PC5"))
+ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/lwasPC_sleep_vs_covariates_part2.png", height = 8, width = 8)
+
+```
+
+### Model fit
+
+```{r}
+
+# Variance component analysis
+
+# - base model with demographc + batch + sleep
+tidy(aov(lm(lwas_hit_PC1 ~ age + age2 + as.factor(sex) + Batch + InjectionOrder + sleep_cshq_total, data = pheno_lipid_pcs))) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+
+# - sensitivity analyses for how sleep and dietary PCs interplay with each other
+tidy(aov(lm(lwas_hit_PC1 ~ age + age2 + as.factor(sex) + Batch + InjectionOrder + sleep_cshq_total + PC1_diet_pe + PC3_diet_pe, data = pheno_lipid_pcs))) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(lm(lwas_hit_PC1 ~ age + age2 + as.factor(sex) + Batch + InjectionOrder + PC1_diet_pe + PC3_diet_pe + sleep_cshq_total, data = pheno_lipid_pcs))) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(lm(lwas_hit_PC1 ~ age + age2 + as.factor(sex) + Batch + InjectionOrder + PC3_diet_pe + PC1_diet_pe + sleep_cshq_total, data = pheno_lipid_pcs))) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+
+# - add cholesterol
+# - sensitivity analyses for the relationship between cholesterol and other variables in relation to lwas_hits_PC1
+tidy(aov(lm(lwas_hit_PC1 ~ age + age2 + as.factor(sex) + Batch + InjectionOrder + sleep_cshq_total + PC1_diet_pe + PC3_diet_pe + cholesterol_lipidome, data = pheno_lipid_pcs))) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+tidy(aov(lm(lwas_hit_PC1 ~ cholesterol_lipidome + age + age2 + as.factor(sex) + Batch + InjectionOrder + sleep_cshq_total + PC1_diet_pe + PC3_diet_pe, data = pheno_lipid_pcs))) %>% mutate(sumsq_prop = sumsq/sum(sumsq))
+
+```
+
+# Microbiome associations
+
+```{r}
+lwas_dir <- "~/Documents/Research/ASD/Output/5_metabolomics/analysis/osca/assoc"
+transform_choice <- "int"
+out_dir_mb <- "~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome"
+```
+
+## Prep microbiome data
+
+**MetaCyc pathway**
+
+- first make the subset for all individuals in the original AAB analysis --> use this to save, just for consistency
+- eval = F here to save time when re-running this script
+
+```{r, eval = FALSE}
+
+library(mixOmics)
+
+mcpath_count <- fread("~/Documents/Research/ASD/Data/3_metagenomics/processed_data/autism_MCPv2_MGDBv2_functional/functional_profiles/by_sample/MetaCyc_pathway.samples.tsv.gz")
+diet_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/Diet/AES_ACRC_QTAB/AES_ACRC_QTAB_diet_PC_Microba_248_pcenergy_PC13_clr.csv"
+
+diet <- read.csv(diet_dir, header = T, as.is = T)
+keep_cols <- which(colnames(mcpath_count) %in% diet$MG_SampleID)
+mcpath_count_keep <- data.frame(mcpath_count)[,c(1, keep_cols)]
+
+zero_count <- unlist(lapply(1:nrow(mcpath_count_keep), function(x) length(which(mcpath_count_keep[x,] == 0))))
+hist(zero_count)
+zero_rm <- which(zero_count > ((ncol(mcpath_count_keep) - 1) - 10))
+zero_rm_mcpath <- mcpath_count_keep$VariableID[zero_rm]
+keep_mcpath <- mcpath_count_keep$VariableID[-zero_rm]
+mcpath_count_rm0 <- mcpath_count_keep[-zero_rm,]
+
+saveRDS(mcpath_count_rm0, "~/Documents/Research/ASD/Output/3_metagenomics/diffabundance/MetaCyc_pathway_count_rm0.rds")
+
+# Perform clr
+mcpath_count_clr <- mcpath_count_keep
+#taxa_count_clr.tmp <- data.frame(clr(as.matrix(taxa_count_clr[,3:ncol(taxa_count_clr)])))
+tmp <- as.matrix(mcpath_count_clr[,2:ncol(mcpath_count_clr)])
+mcpath_count_clr.tmp <- logratio.transfo(t(tmp), logratio = "CLR", offset = 0.001)
+class(mcpath_count_clr.tmp) <- "matrix"
+mcpath_count_clr <- data.frame(VariableID = mcpath_count$VariableID, t(mcpath_count_clr.tmp))
+
+# Remove low-abundance taxa
+mcpath_count_rm0_clr <- mcpath_count_clr[-which(mcpath_count_keep$VariableID %in% zero_rm_mcpath),]
+mcpath_count_rm0_clr$VariableID <- as.character(mcpath_count_rm0_clr$VariableID)
+
+saveRDS(mcpath_count_rm0_clr, "~/Documents/Research/ASD/Output/3_metagenomics/diffabundance/MetaCyc_pathway_clr_rm0.rds")
+
+```
+
+## Read in data
+
+- eval = F here to save time when re-running this script
+
+```{r, eval = F}
+
+# Lipidomics PCs
+lipid_pca_asd.tmp <- readRDS(paste(lwas_dir, "/lipids_", transform_choice, "_rmstoragepre_asd_covdemo.logistic", ".sigpca.rds", sep = ""))$x[,"PC1"]
+lipid_pca_asd <- data.frame(IID = as.numeric(names(lipid_pca_asd.tmp)), PC1_lwas_ASD = lipid_pca_asd.tmp)
+lipid_pca_iqdq.tmp <- readRDS(paste(lwas_dir, "/lipids_", transform_choice, "_iqdq_covdemo.linear", ".sigpca.rds", sep = ""))$x[,"PC1"]
+lipid_pca_iqdq <- data.frame(IID = as.numeric(names(lipid_pca_iqdq.tmp)), PC1_lwas_IQDQ = lipid_pca_iqdq.tmp)
+lipid_pca_sleep.tmp <- readRDS(paste(lwas_dir, "/lipids_", transform_choice, "_sleep_covdemo.linear", ".sigpca.rds", sep = ""))$x[,"PC1"]
+lipid_pca_sleep <- data.frame(IID = as.numeric(names(lipid_pca_sleep.tmp)), PC1_lwas_sleep = lipid_pca_sleep.tmp)
+
+# Microbiome data
+source("/Users/uqcyap3/Documents/GitHub/ASD/ACRC/metagenomics/ANCOM-v2.1/scripts/ancom_v2.1.R")
+taxa_count_rm0_full <- readRDS("~/Documents/Research/ASD/Output/3_metagenomics/diffabundance/taxa_count_rm0.rds")
+mcpath_count_rm0_full <- readRDS("~/Documents/Research/ASD/Output/3_metagenomics/diffabundance/MetaCyc_pathway_count_rm0.rds")
+
+# Prepare data
+metadata <- pheno %>% 
+  left_join(., lipid_pca_asd, by = "IID") %>%
+  left_join(., lipid_pca_iqdq, by = "IID") %>%
+  left_join(., lipid_pca_sleep, by = "IID") %>%
+  filter(!is.na(MG_SampleID)) %>%
+  dplyr::select(c("MG_SampleID", "PC1_lwas_ASD", "PC1_lwas_IQDQ", "PC1_lwas_sleep", "ASD", "sex", "age", "age2", "PC1_diet_pe", "PC2_diet_pe", "PC3_diet_pe", "MG_FID", "Batch", "InjectionOrder", "storage_blood_days", "IID", "study"))
+
+metadata$ASD <- as.factor(metadata$ASD)
+metadata$MG_FID[which(metadata$MG_FID == 0)] <- metadata$MG_SampleID[which(metadata$MG_FID == 0)]
+
+saveRDS(metadata, "~/Documents/Research/ASD/Output/5_metabolomics/analysis/diet_microbiome/microbiome_metadata.rds")
+
+```
+
+**Remove 0s for this specific subset**
+
+- eval = F here to save time when re-running this script
+
+```{r, eval = FALSE}
+
+# Species
+keep_cols <- which(colnames(taxa_count_rm0_full) %in% pheno$MG_SampleID)
+taxa_count_rm0_keep <- data.frame(taxa_count_rm0_full)[,c(1, keep_cols)]
+
+zero_count <- unlist(lapply(1:nrow(taxa_count_rm0_keep), function(x) length(which(taxa_count_rm0_keep[x,] == 0))))
+hist(zero_count)
+zero_rm <- which(zero_count > ((ncol(taxa_count_rm0_keep) - 1) - 10))
+zero_rm_taxa <- taxa_count_rm0_keep$Taxon[zero_rm]
+keep_taxa <- taxa_count_rm0_keep$Taxon[-zero_rm]
+taxa_count_rm0 <- taxa_count_rm0_keep[-zero_rm,]
+
+# MetaCyc
+keep_cols <- which(colnames(mcpath_count_rm0_full) %in% pheno$MG_SampleID)
+mcpath_count_rm0_keep <- data.frame(mcpath_count_rm0_full)[,c(1, keep_cols)]
+
+zero_count <- unlist(lapply(1:nrow(mcpath_count_rm0_keep), function(x) length(which(mcpath_count_rm0_keep[x,] == 0))))
+hist(zero_count)
+zero_rm <- which(zero_count > ((ncol(mcpath_count_rm0_keep) - 1) - 10))
+zero_rm_mcpath <- mcpath_count_rm0_keep$VariableID[zero_rm]
+keep_mcpath <- mcpath_count_rm0_keep$VariableID[-zero_rm]
+mcpath_count_rm0 <- mcpath_count_rm0_keep[-zero_rm,]
+
+# Check
+dim(taxa_count_rm0)
+dim(mcpath_count_rm0)
+
+```
+
+**Taxonomic data**
+
+- eval = F here to save time when re-running this script
+
+```{r, eval = F}
+
+ancom_taxa <- taxa_count_rm0[,c(2:ncol(taxa_count_rm0))]
+ancom_taxa <- ancom_taxa[,which(colnames(ancom_taxa) %in% metadata$MG_SampleID)]
+ancom_taxa <- ancom_taxa[,match(metadata$MG_SampleID, colnames(ancom_taxa))]
+rownames(ancom_taxa) <- taxa_count_rm0$Taxon
+
+# Check variables in the correct order
+identical(colnames(ancom_taxa), metadata$MG_SampleID)
+
+ancom_table <- feature_table_pre_process(ancom_taxa, metadata, "MG_SampleID", group_var = NULL, out_cut = 0.05, zero_cut = 1, lib_cut = 1e6, neg_lb)
+
+saveRDS(ancom_table, paste(out_dir_mb, "/microbiome_taxa_counts_ancom_table_lwas_hit_asd_iqdq_sleep.rds", sep = ""))
+
+```
+
+**Functional data (MetaCyc pathway)**
+
+- eval = F here to save time when re-running this script
+
+```{r, eval = F}
+
+ancom_mcpath <- mcpath_count_rm0[,c(2:ncol(mcpath_count_rm0))]
+ancom_mcpath <- ancom_mcpath[,which(colnames(ancom_mcpath) %in% metadata$MG_SampleID)]
+ancom_mcpath <- ancom_mcpath[,match(metadata$MG_SampleID, colnames(ancom_mcpath))]
+rownames(ancom_mcpath) <-  mcpath_count_rm0$VariableID
+
+# Check variables in the correct order
+identical(colnames(ancom_mcpath), metadata$MG_SampleID)
+
+ancom_mcpath_table <- feature_table_pre_process(ancom_mcpath, metadata, "MG_SampleID", group_var = NULL, out_cut = 0.05, zero_cut = 1, lib_cut = 0, neg_lb)
+
+saveRDS(ancom_mcpath_table, paste(out_dir_mb, "/microbiome_func_MetaCycpathway_ancom_table_lwas_hit_asd_iqdq_sleep.rds", sep = ""))
+
+```
+
+## Run ANCOM for microbiome taxa on PCs of trait-associated lipids
+
+### dietary PC1
+
+#### covdemo
+
+```{r}
+
+# Run tests with covariates (age + sex + diet)
+ancom_dietPC1_sex_age <- ANCOM(ancom_table$feature_table, ancom_table$meta_data, ancom_table$structure_zeros, main_var = "PC1_diet_pe", p_adj_method = "BH", adj_formula = "sex + age + age2 + Batch + InjectionOrder + storage_blood_days")
+
+ancom_dietPC1_sex_age$out <- ancom_dietPC1_sex_age$out[order(ancom_dietPC1_sex_age$out$W, decreasing = T),]
+
+datatable(ancom_dietPC1_sex_age$out)
+
+write.table(ancom_dietPC1_sex_age$out, paste(out_dir_mb, "/microbiome_taxa_counts_lwas_dietPC1_covdemo.txt", sep = ""),  col.names = T, row.names = F, sep = "\t", quote = F)
+
+saveRDS(ancom_dietPC1_sex_age$fig, paste(out_dir_mb, "/microbiome_taxa_counts_lwas_dietPC1_covdemo.rds", sep = ""))
+
+```
+
+### dietary PC3
+
+#### covdemo
+
+```{r}
+
+# Run tests with covariates (age + sex + diet)
+ancom_dietPC3_sex_age_diet <- ANCOM(ancom_table$feature_table, ancom_table$meta_data, ancom_table$structure_zeros, main_var = "PC3_diet_pe", p_adj_method = "BH", adj_formula = "sex + age + age2 + Batch + InjectionOrder + storage_blood_days")
+
+ancom_dietPC3_sex_age_diet$out <- ancom_dietPC3_sex_age_diet$out[order(ancom_dietPC3_sex_age_diet$out$W, decreasing = T),]
+
+datatable(ancom_dietPC3_sex_age_diet$out)
+
+write.table(ancom_dietPC3_sex_age_diet$out, paste(out_dir_mb, "/microbiome_taxa_counts_lwas_dietPC3_covdemo.txt", sep = ""),  col.names = T, row.names = F, sep = "\t", quote = F)
+
+saveRDS(ancom_dietPC3_sex_age_diet$fig, paste(out_dir_mb, "/microbiome_taxa_counts_lwas_dietPC3_covdemo.rds", sep = ""))
+
+```
+
+### ASD
+
+#### covdemo
+
+```{r}
+
+# Run tests with covariates (age + sex + diet)
+ancom_asd_sex_age_diet <- ANCOM(ancom_table$feature_table, ancom_table$meta_data, ancom_table$structure_zeros, main_var = "PC1_lwas_ASD", p_adj_method = "BH", adj_formula = "sex + age + age2 + Batch + InjectionOrder + storage_blood_days")
+
+ancom_asd_sex_age_diet$out <- ancom_asd_sex_age_diet$out[order(ancom_asd_sex_age_diet$out$W, decreasing = T),]
+
+datatable(ancom_asd_sex_age_diet$out)
+
+write.table(ancom_asd_sex_age_diet$out, paste(out_dir_mb, "/microbiome_taxa_counts_lwas_asd_covdemo.txt", sep = ""),  col.names = T, row.names = F, sep = "\t", quote = F)
+
+saveRDS(ancom_asd_sex_age_diet$fig, paste(out_dir_mb, "/microbiome_taxa_counts_lwas_asd_covdemo.rds", sep = ""))
+
+```
+
+#### covdemodiet
+
+```{r}
+
+# Run tests with covariates (age + sex + diet)
+ancom_asd_sex_age_diet <- ANCOM(ancom_table$feature_table, ancom_table$meta_data, ancom_table$structure_zeros, main_var = "PC1_lwas_ASD", p_adj_method = "BH", adj_formula = "sex + age + age2 + PC1_diet_pe + PC2_diet_pe + PC3_diet_pe + Batch + InjectionOrder + storage_blood_days")
+
+ancom_asd_sex_age_diet$out <- ancom_asd_sex_age_diet$out[order(ancom_asd_sex_age_diet$out$W, decreasing = T),]
+
+datatable(ancom_asd_sex_age_diet$out)
+
+write.table(ancom_asd_sex_age_diet$out, paste(out_dir_mb, "/microbiome_taxa_counts_lwas_asd_covdemodiet.txt", sep = ""),  col.names = T, row.names = F, sep = "\t", quote = F)
+
+saveRDS(ancom_asd_sex_age_diet$fig, paste(out_dir_mb, "/microbiome_taxa_counts_lwas_asd_covdemodiet.rds", sep = ""))
+
+```
+
+### IQ/DQ
+
+#### covdemo
+
+```{r}
+
+# Run tests with covariates (age + sex + diet)
+ancom_iqdq_sex_age_diet <- ANCOM(ancom_table$feature_table, ancom_table$meta_data, ancom_table$structure_zeros, main_var = "PC1_lwas_IQDQ", p_adj_method = "BH", adj_formula = "sex + age + age2 + Batch + InjectionOrder + storage_blood_days")
+
+ancom_iqdq_sex_age_diet$out <- ancom_iqdq_sex_age_diet$out[order(ancom_iqdq_sex_age_diet$out$W, decreasing = T),]
+
+datatable(ancom_iqdq_sex_age_diet$out)
+
+write.table(ancom_iqdq_sex_age_diet$out, paste(out_dir_mb, "/microbiome_taxa_counts_lwas_iqdq_covdemo.txt", sep = ""),  col.names = T, row.names = F, sep = "\t", quote = F)
+
+saveRDS(ancom_iqdq_sex_age_diet$fig, paste(out_dir_mb, "/microbiome_taxa_counts_lwas_iqdq_covdemo.rds", sep = ""))
+
+```
+
+#### covdemodiet
+
+```{r}
+
+# Run tests with covariates (age + sex + diet)
+ancom_iqdq_sex_age_diet <- ANCOM(ancom_table$feature_table, ancom_table$meta_data, ancom_table$structure_zeros, main_var = "PC1_lwas_IQDQ", p_adj_method = "BH", adj_formula = "sex + age + age2 + PC1_diet_pe + PC2_diet_pe + PC3_diet_pe + Batch + InjectionOrder + storage_blood_days")
+
+ancom_iqdq_sex_age_diet$out <- ancom_iqdq_sex_age_diet$out[order(ancom_iqdq_sex_age_diet$out$W, decreasing = T),]
+
+datatable(ancom_iqdq_sex_age_diet$out)
+
+write.table(ancom_iqdq_sex_age_diet$out, paste(out_dir_mb, "/microbiome_taxa_counts_lwas_iqdq_covdemodiet.txt", sep = ""),  col.names = T, row.names = F, sep = "\t", quote = F)
+
+saveRDS(ancom_iqdq_sex_age_diet$fig, paste(out_dir_mb, "/microbiome_taxa_counts_lwas_iqdq_covdemodiet.rds", sep = ""))
+
+```
+
+### Sleep problems
+
+#### covdemo
+
+```{r}
+
+# Run tests with covariates (age + sex + diet)
+ancom_sleep_sex_age_diet <- ANCOM(ancom_table$feature_table, ancom_table$meta_data, ancom_table$structure_zeros, main_var = "PC1_lwas_sleep", p_adj_method = "BH", adj_formula = "sex + age + age2 + Batch + InjectionOrder + storage_blood_days")
+
+ancom_sleep_sex_age_diet$out <- ancom_sleep_sex_age_diet$out[order(ancom_sleep_sex_age_diet$out$W, decreasing = T),]
+
+datatable(ancom_sleep_sex_age_diet$out)
+
+write.table(ancom_sleep_sex_age_diet$out, paste(out_dir_mb, "/microbiome_taxa_counts_lwas_sleep_covdemo.txt", sep = ""),  col.names = T, row.names = F, sep = "\t", quote = F)
+
+saveRDS(ancom_sleep_sex_age_diet$fig, paste(out_dir_mb, "/microbiome_taxa_counts_lwas_sleep_covdemo.rds", sep = ""))
+
+```
+
+#### covdemodiet
+
+```{r}
+
+# Run tests with covariates (age + sex + diet)
+ancom_sleep_sex_age_diet <- ANCOM(ancom_table$feature_table, ancom_table$meta_data, ancom_table$structure_zeros, main_var = "PC1_lwas_sleep", p_adj_method = "BH", adj_formula = "sex + age + age2 + PC1_diet_pe + PC2_diet_pe + PC3_diet_pe + Batch + InjectionOrder + storage_blood_days")
+
+ancom_sleep_sex_age_diet$out <- ancom_sleep_sex_age_diet$out[order(ancom_sleep_sex_age_diet$out$W, decreasing = T),]
+
+datatable(ancom_sleep_sex_age_diet$out)
+
+write.table(ancom_sleep_sex_age_diet$out, paste(out_dir_mb, "/microbiome_taxa_counts_lwas_sleep_covdemodiet.txt", sep = ""),  col.names = T, row.names = F, sep = "\t", quote = F)
+
+saveRDS(ancom_sleep_sex_age_diet$fig, paste(out_dir_mb, "/microbiome_taxa_counts_lwas_sleep_covdemodiet.rds", sep = ""))
+
+```
+
+## Run ANCOM for microbiome MetaCyc pathways on PCs of trait-associated lipids
+
+### dietary PC1
+
+#### covdemo
+
+```{r}
+
+# Run tests with covariates (age + sex + diet)
+ancom_mcpath_dietPC1_sex_age <- ANCOM(ancom_mcpath_table$feature_table, ancom_mcpath_table$meta_data, ancom_mcpath_table$structure_zeros, main_var = "PC1_diet_pe", p_adj_method = "BH", adj_formula = "sex + age + age2 + Batch + InjectionOrder + storage_blood_days")
+
+ancom_mcpath_dietPC1_sex_age$out <- ancom_mcpath_dietPC1_sex_age$out[order(ancom_mcpath_dietPC1_sex_age$out$W, decreasing = T),]
+
+datatable(ancom_mcpath_dietPC1_sex_age$out)
+
+write.table(ancom_mcpath_dietPC1_sex_age$out, paste(out_dir_mb, "/microbiome_func_MetaCycpathway_lwas_dietPC1_covdemo.txt", sep = ""),  col.names = T, row.names = F, sep = "\t", quote = F)
+
+saveRDS(ancom_mcpath_dietPC1_sex_age$fig, paste(out_dir_mb, "/microbiome_func_MetaCycpathway_lwas_dietPC1_covdemo.rds", sep = ""))
+
+```
+
+### dietary PC3
+
+#### covdemo
+
+```{r}
+
+# Run tests with covariates (age + sex + diet)
+ancom_mcpath_dietPC3_sex_age <- ANCOM(ancom_mcpath_table$feature_table, ancom_mcpath_table$meta_data, ancom_mcpath_table$structure_zeros, main_var = "PC3_diet_pe", p_adj_method = "BH", adj_formula = "sex + age + age2 + Batch + InjectionOrder + storage_blood_days")
+
+ancom_mcpath_dietPC3_sex_age$out <- ancom_mcpath_dietPC3_sex_age$out[order(ancom_mcpath_dietPC3_sex_age$out$W, decreasing = T),]
+
+datatable(ancom_mcpath_dietPC3_sex_age$out)
+
+write.table(ancom_mcpath_dietPC3_sex_age$out, paste(out_dir_mb, "/microbiome_func_MetaCycpathway_lwas_dietPC3_covdemo.txt", sep = ""),  col.names = T, row.names = F, sep = "\t", quote = F)
+
+saveRDS(ancom_mcpath_dietPC3_sex_age$fig, paste(out_dir_mb, "/microbiome_func_MetaCycpathway_lwas_dietPC3_covdemo.rds", sep = ""))
+
+```
+
+### ASD
+
+#### covdemo
+
+```{r}
+
+# Run tests with covariates (age + sex + diet)
+ancom_mcpath_asd_sex_age_diet <- ANCOM(ancom_mcpath_table$feature_table, ancom_mcpath_table$meta_data, ancom_mcpath_table$structure_zeros, main_var = "PC1_lwas_ASD", p_adj_method = "BH", adj_formula = "sex + age + age2 + Batch + InjectionOrder + storage_blood_days")
+
+ancom_mcpath_asd_sex_age_diet$out <- ancom_mcpath_asd_sex_age_diet$out[order(ancom_mcpath_asd_sex_age_diet$out$W, decreasing = T),]
+
+datatable(ancom_mcpath_asd_sex_age_diet$out)
+
+write.table(ancom_mcpath_asd_sex_age_diet$out, paste(out_dir_mb, "/microbiome_func_MetaCycpathway_lwas_asd_covdemo.txt", sep = ""),  col.names = T, row.names = F, sep = "\t", quote = F)
+
+saveRDS(ancom_mcpath_asd_sex_age_diet$fig, paste(out_dir_mb, "/microbiome_func_MetaCycpathway_lwas_asd_covdemo.rds", sep = ""))
+
+```
+
+#### covdemodiet
+
+```{r}
+
+# Run tests with covariates (age + sex + diet)
+ancom_mcpath_asd_sex_age_diet <- ANCOM(ancom_mcpath_table$feature_table, ancom_mcpath_table$meta_data, ancom_mcpath_table$structure_zeros, main_var = "PC1_lwas_ASD", p_adj_method = "BH", adj_formula = "sex + age + age2 + PC1_diet_pe + PC2_diet_pe + PC3_diet_pe + Batch + InjectionOrder + storage_blood_days")
+
+ancom_mcpath_asd_sex_age_diet$out <- ancom_mcpath_asd_sex_age_diet$out[order(ancom_mcpath_asd_sex_age_diet$out$W, decreasing = T),]
+
+datatable(ancom_mcpath_asd_sex_age_diet$out)
+
+write.table(ancom_mcpath_asd_sex_age_diet$out, paste(out_dir_mb, "/microbiome_func_MetaCycpathway_lwas_asd_covdemodiet.txt", sep = ""),  col.names = T, row.names = F, sep = "\t", quote = F)
+
+saveRDS(ancom_mcpath_asd_sex_age_diet$fig, paste(out_dir_mb, "/microbiome_func_MetaCycpathway_lwas_asd_covdemodiet.rds", sep = ""))
+
+```
+
+### IQ/DQ
+
+#### covdemo
+
+```{r}
+
+# Run tests with covariates (age + sex + diet)
+ancom_mcpath_iqdq_sex_age_diet <- ANCOM(ancom_mcpath_table$feature_table, ancom_mcpath_table$meta_data, ancom_mcpath_table$structure_zeros, main_var = "PC1_lwas_IQDQ", p_adj_method = "BH", adj_formula = "sex + age + age2 + Batch + InjectionOrder + storage_blood_days")
+
+ancom_mcpath_iqdq_sex_age_diet$out <- ancom_mcpath_iqdq_sex_age_diet$out[order(ancom_mcpath_iqdq_sex_age_diet$out$W, decreasing = T),]
+
+datatable(ancom_mcpath_iqdq_sex_age_diet$out)
+
+write.table(ancom_mcpath_iqdq_sex_age_diet$out, paste(out_dir_mb, "/microbiome_func_MetaCycpathway_lwas_iqdq_covdemo.txt", sep = ""),  col.names = T, row.names = F, sep = "\t", quote = F)
+
+saveRDS(ancom_mcpath_iqdq_sex_age_diet$fig, paste(out_dir_mb, "/microbiome_func_MetaCycpathway_lwas_iqdq_covdemo.rds", sep = ""))
+
+```
+
+#### covdemodiet
+
+```{r}
+
+# Run tests with covariates (age + sex + diet)
+ancom_mcpath_iqdq_sex_age_diet <- ANCOM(ancom_mcpath_table$feature_table, ancom_mcpath_table$meta_data, ancom_mcpath_table$structure_zeros, main_var = "PC1_lwas_IQDQ", p_adj_method = "BH", adj_formula = "sex + age + age2 + PC1_diet_pe + PC2_diet_pe + PC3_diet_pe + Batch + InjectionOrder + storage_blood_days")
+
+ancom_mcpath_iqdq_sex_age_diet$out <- ancom_mcpath_iqdq_sex_age_diet$out[order(ancom_mcpath_iqdq_sex_age_diet$out$W, decreasing = T),]
+
+datatable(ancom_mcpath_iqdq_sex_age_diet$out)
+
+write.table(ancom_mcpath_iqdq_sex_age_diet$out, paste(out_dir_mb, "/microbiome_func_MetaCycpathway_lwas_iqdq_covdemodiet.txt", sep = ""),  col.names = T, row.names = F, sep = "\t", quote = F)
+
+saveRDS(ancom_mcpath_iqdq_sex_age_diet$fig, paste(out_dir_mb, "/microbiome_func_MetaCycpathway_lwas_iqdq_covdemodiet.rds", sep = ""))
+
+```
+
+### Sleep problems
+
+#### covdemo
+
+```{r}
+
+# Run tests with covariates (age + sex)
+ancom_mcpath_sleep_sex_age <- ANCOM(ancom_mcpath_table$feature_table, ancom_mcpath_table$meta_data, ancom_mcpath_table$structure_zeros, main_var = "PC1_lwas_sleep", p_adj_method = "BH", adj_formula = "sex + age + age2 + Batch + InjectionOrder + storage_blood_days")
+
+ancom_mcpath_sleep_sex_age$out <- ancom_mcpath_sleep_sex_age$out[order(ancom_mcpath_sleep_sex_age$out$W, decreasing = T),]
+
+datatable(ancom_mcpath_sleep_sex_age$out)
+
+write.table(ancom_mcpath_sleep_sex_age$out, paste(out_dir_mb, "/microbiome_func_MetaCycpathway_lwas_sleep_covdemo.txt", sep = ""),  col.names = T, row.names = F, sep = "\t", quote = F)
+
+saveRDS(ancom_mcpath_sleep_sex_age$fig, paste(out_dir_mb, "/microbiome_func_MetaCycpathway_lwas_sleep_covdemo.rds", sep = ""))
+
+```
+
+#### covdemodiet
+
+```{r}
+
+# Run tests with covariates (age + sex + diet)
+ancom_mcpath_sleep_sex_age_diet <- ANCOM(ancom_mcpath_table$feature_table, ancom_mcpath_table$meta_data, ancom_mcpath_table$structure_zeros, main_var = "PC1_lwas_sleep", p_adj_method = "BH", adj_formula = "sex + age + age2 + PC1_diet_pe + PC2_diet_pe + PC3_diet_pe + Batch + InjectionOrder + storage_blood_days")
+
+ancom_mcpath_sleep_sex_age_diet$out <- ancom_mcpath_sleep_sex_age_diet$out[order(ancom_mcpath_sleep_sex_age_diet$out$W, decreasing = T),]
+
+datatable(ancom_mcpath_sleep_sex_age_diet$out)
+
+write.table(ancom_mcpath_sleep_sex_age_diet$out, paste(out_dir_mb, "/microbiome_func_MetaCycpathway_lwas_sleep_covdemodiet.txt", sep = ""),  col.names = T, row.names = F, sep = "\t", quote = F)
+
+saveRDS(ancom_mcpath_sleep_sex_age_diet$fig, paste(out_dir_mb, "/microbiome_func_MetaCycpathway_lwas_sleep_covdemodiet.rds", sep = ""))
+
+```
+
+## ANCOM plots
+
+**Arguments for dietary PC analysis**
+
+```{r}
+
+library(mixOmics)
+
+# Iterate through trait and covariate combination
+trait <- c("asd", "iqdq", "sleep")
+cov <- c("covdemo", "covdemodiet")
+mbdata <- c("taxa_counts", "func_MetaCycpathway")
+#mbdata <- c("func_MetaCycpathway")
+
+for (k in 1:length(mbdata)) {
+  ancom_table_dir <- paste(out_dir_mb, "/microbiome_", mbdata[k], "_ancom_table_lwas_hit_asd_iqdq_sleep.rds", sep = "")
+  for (i in 1:length(trait)) {
+   for (j in 1:length(cov)) {
+    
+    if (trait[i] == "asd") {
+      main_var <- "PC1_lwas_ASD"
+      title <- "ASD LWAS PC1"
+      ancom_out_dir <- paste(out_dir_mb, "/microbiome_", mbdata[k], "_lwas_asd_", cov[j], ".txt", sep = "")
+      ancom_rds_dir <- paste(out_dir_mb, "/microbiome_", mbdata[k], "_lwas_asd_", cov[j], ".rds", sep = "")
+      ancom_plot_out <- paste(out_dir_mb, "/microbiome_", mbdata[k], "_lwas_asd_", cov[j], sep = "")
+    } else if (trait[i] == "iqdq") {
+      main_var <- "PC1_lwas_IQDQ"
+      title <- "IQ/DQ LWAS PC1"
+      ancom_out_dir <- paste(out_dir_mb, "/microbiome_", mbdata[k], "_lwas_iqdq_", cov[j], ".txt", sep = "")
+      ancom_rds_dir <- paste(out_dir_mb, "/microbiome_", mbdata[k], "_lwas_iqdq_", cov[j], ".rds", sep = "")
+      ancom_plot_out <- paste(out_dir_mb, "/microbiome_", mbdata[k], "_lwas_iqdq_", cov[j], sep = "")
+    } else if (trait[i] == "sleep") {
+      main_var <- "PC1_lwas_sleep"
+      title <- "sleep problems LWAS PC1"
+      ancom_out_dir <- paste(out_dir_mb, "/microbiome_", mbdata[k], "_lwas_sleep_", cov[j], ".txt", sep =  "")
+      ancom_rds_dir <- paste(out_dir_mb, "/microbiome_", mbdata[k], "_lwas_sleep_", cov[j], ".rds", sep =  "")
+      ancom_plot_out <- paste(out_dir_mb, "/microbiome_", mbdata[k], "_lwas_sleep_", cov[j], sep = "")
+    }
+
+    # Once arguments read in ...
+    ancom_table <- readRDS(ancom_table_dir)
+    ancom_taxa <- ancom_table$feature_table
+    metadata <- ancom_table$meta_data
+    ancom_out <- fread(ancom_out_dir)
+    ancom_rds <- readRDS(ancom_rds_dir)
+    ancom_plot <- ancom_rds$data
+    
+    # Match up direction of LWAS hit PC1 and the trait for ease of interpretation
+    metadata$PC1_lwas_ASD <- -1 * metadata$PC1_lwas_ASD
+    metadata$PC1_lwas_sleep <- -1 * metadata$PC1_lwas_sleep
+
+    # Calculate clr
+    clr_table = t(as.matrix(logratio.transfo(t(as.matrix(ancom_taxa)), logratio = "CLR", offset = 0.001)))
+    class(clr_table) <- "matrix"
+    # Calculate clr mean difference
+    eff_size = apply(clr_table, 1, function(y) 
+      lm(y ~ x, data = data.frame(y = y, 
+                                  x = metadata %>% pull(main_var),
+                                  check.names = FALSE))$coef[-1])
+    eff_size.df <- data.frame(taxa_id = names(eff_size), clr_mean_difference = eff_size)
+    
+    if (metadata[1,main_var] == "nonASD") {
+      eff_size.df$clr_mean_difference <- (-1) * eff_size.df$clr_mean_difference
+    }
+    
+    # Clean data
+    ancom_full <- join(ancom_out, ancom_plot, by = "taxa_id", type = "inner")
+    ancom_full <- ancom_full[order(ancom_full$W, decreasing = T),]
+    colnames(ancom_full)[which(colnames(ancom_full) == "W")] <- "W_statistic"
+    #colnames(ancom_full)[which(colnames(ancom_full) == "x")] <- "clr_mean_difference"
+    ancom_full <- join(ancom_full, eff_size.df, by = "taxa_id")
+    ancom_full$quantile <- ancom_full$W/nrow(ancom_full)
+    ancom_full$detection <- "< 0.6"
+    ancom_full$detection[which(ancom_full$quantile >= 0.6)] <- ">= 0.6"
+    ancom_full$detection[which(ancom_full$quantile >= 0.7)] <- ">= 0.7"
+    ancom_full$detection[which(ancom_full$quantile >= 0.8)] <- ">= 0.8"
+    ancom_full$detection[which(ancom_full$quantile >= 0.9)] <- ">= 0.9"
+    levels(ancom_full$detection) <- c("< 0.6", ">= 0.6", ">= 0.7", ">= 0.8", ">= 0.9")
+    ancom_full$label <- NA
+    # Label the top 10, unless > 10 sig hits
+    if (length(ancom_full$label[which(ancom_full$detection != "< 0.6")]) >= 1) {
+      ancom_full$label[which(ancom_full$detection != "< 0.6")] <-     ancom_full$taxa_id[which(ancom_full$detection != "< 0.6")]
+    } else {
+      ancom_full$label[which(ancom_full$W_statistic > 200)] <-     ancom_full$taxa_id[which(ancom_full$W_statistic > 200)]
+    }
+    
+    # Plot
+    cols <- brewer.pal(n = 8, name = "Dark2")
+    qs <- nrow(ancom_full) * c(0.6, 0.7, 0.8, 0.9)
+    ancom_full.gg <- ggplot(ancom_full, aes(x = clr_mean_difference, y = W_statistic)) +
+      geom_point(aes(colour = detection), size = 2) +
+      scale_color_manual(values=c("< 0.6"="gray20", ">= 0.6"=cols[1], ">= 0.7"=cols[2], ">=     0.8"=cols[3], ">= 0.9"=cols[4])) +
+      geom_text_repel(aes(x = clr_mean_difference, y = W_statistic, label = ifelse(label != "", label, "")), force = 10, size = 4, min.segment.length = 0) +
+      geom_hline(yintercept = qs[1], linetype = "dashed", color = cols[1]) +
+      geom_hline(yintercept = qs[2], linetype = "dashed", color = cols[2]) +
+      geom_hline(yintercept = qs[3], linetype = "dashed", color = cols[3]) +
+      geom_hline(yintercept = qs[4], linetype = "dashed", color = cols[4]) +
+      annotate(geom = "text", x=max(ancom_full$clr_mean_difference) + 0.01, y=qs[1]+(qs[1]*0.08), label="0.6", color = cols[1], size = 5) +
+      annotate(geom = "text", x=max(ancom_full$clr_mean_difference) + 0.01, y=qs[2]+(qs[2]*0.07), label="0.7", color = cols[2], size = 5) +
+      annotate(geom = "text", x=max(ancom_full$clr_mean_difference) + 0.01, y=qs[3]+(qs[3]*0.06), label="0.8", color = cols[3], size = 5) +
+      annotate(geom = "text", x=max(ancom_full$clr_mean_difference) + 0.01, y=qs[4]+(qs[4]*0.06),  label="0.9", color = cols[4], size = 5) +
+      xlab("clr mean difference") +
+      ylab("W-statistic") +
+      labs(title = title) +
+      theme_bw() +
+      theme(legend.position = "none", text = element_text(size = 20))
+    
+    # Format output
+    ancom_full$x <- ancom_full$clr_mean_difference
+    write.table(ancom_full, paste(ancom_plot_out, "_anno.txt", sep = ""), col.names = T, row.names = F,     quote = F, sep = "\t")
+
+    ancom_full.gg
+    
+    # longer format
+    ggsave(paste(ancom_plot_out, ".png", sep = ""), ancom_full.gg, height = 7, width = 4)
+    ggsave(paste(ancom_plot_out, ".svg", sep = ""), ancom_full.gg, height = 7, width = 4)
+    # wider format
+    ggsave(paste(ancom_plot_out, ".png", sep = ""), ancom_full.gg, height = 7, width = 6)
+    ggsave(paste(ancom_plot_out, ".svg", sep = ""), ancom_full.gg, height = 7, width = 6)
+
+    }
+  }
+}
+
+```
+
+- this *below* code chunk contains arguments to copy-paste into the command line, and then after this, copy-paste the *above* code chunk from the comment `# Once arguments read in ...`
+- this is because the loop is only written to include these analyses
+- these results are part of a sensitivity analysis to check how the dietary PCs associated with neurodevelopmental traits relate to microbiome species/pathways
+
+```{r}
+
+      # dietary PC1
+      main_var <- "PC1_diet_pe"
+      title <- "dietary PC1"
+      ancom_table_dir <- paste(out_dir_mb, "/microbiome_", "taxa_counts", "_ancom_table_lwas_hit_asd_iqdq_sleep.rds", sep = "")
+      ancom_out_dir <- paste(out_dir_mb, "/microbiome_", "taxa_counts", "_lwas_dietPC1_", "covdemo", ".txt", sep =  "")
+      ancom_rds_dir <- paste(out_dir_mb, "/microbiome_", "taxa_counts", "_lwas_dietPC1_", "covdemo", ".rds", sep =  "")
+      ancom_plot_out <- paste(out_dir_mb, "/microbiome_", "taxa_counts", "_lwas_dietPC1_", "covdemo", sep = "")
+
+      # dietary PC1
+      main_var <- "PC1_diet_pe"
+      title <- "dietary PC1"
+      ancom_table_dir <- paste(out_dir_mb, "/microbiome_", "func_MetaCycpathway", "_ancom_table_lwas_hit_asd_iqdq_sleep.rds", sep = "")
+      ancom_out_dir <- paste(out_dir_mb, "/microbiome_", "func_MetaCycpathway", "_lwas_dietPC1_", "covdemo", ".txt", sep =  "")
+      ancom_rds_dir <- paste(out_dir_mb, "/microbiome_", "func_MetaCycpathway", "_lwas_dietPC1_", "covdemo", ".rds", sep =  "")
+      ancom_plot_out <- paste(out_dir_mb, "/microbiome_", "func_MetaCycpathway", "_lwas_dietPC1_", "covdemo", sep = "")
+      
+        # dietary PC3
+      main_var <- "PC3_diet_pe"
+      title <- "dietary PC3"
+      ancom_table_dir <- paste(out_dir_mb, "/microbiome_", "taxa_counts", "_ancom_table_lwas_hit_asd_iqdq_sleep.rds", sep = "")
+      ancom_out_dir <- paste(out_dir_mb, "/microbiome_", "taxa_counts", "_lwas_dietPC3_", "covdemo", ".txt", sep =  "")
+      ancom_rds_dir <- paste(out_dir_mb, "/microbiome_", "taxa_counts", "_lwas_dietPC3_", "covdemo", ".rds", sep =  "")
+      ancom_plot_out <- paste(out_dir_mb, "/microbiome_", "taxa_counts", "_lwas_dietPC3_", "covdemo", sep = "")
+
+      # dietary PC3
+      main_var <- "PC3_diet_pe"
+      title <- "dietary PC3"
+      ancom_table_dir <- paste(out_dir_mb, "/microbiome_", "func_MetaCycpathway", "_ancom_table_lwas_hit_asd_iqdq_sleep.rds", sep = "")
+      ancom_out_dir <- paste(out_dir_mb, "/microbiome_", "func_MetaCycpathway", "_lwas_dietPC3_", "covdemo", ".txt", sep =  "")
+      ancom_rds_dir <- paste(out_dir_mb, "/microbiome_", "func_MetaCycpathway", "_lwas_dietPC3_", "covdemo", ".rds", sep =  "")
+      ancom_plot_out <- paste(out_dir_mb, "/microbiome_", "func_MetaCycpathway", "_lwas_dietPC3_", "covdemo", sep = "")
+
+
+```
+
+# Variance analysis
+
+```{r}
+
+ancom_table <- readRDS(paste(out_dir_mb, "/microbiome_taxa_counts_ancom_table_lwas_hit_asd_iqdq_sleep.rds", sep = ""))
+
+# Take differentially-abundant species and add to pheno
+#mcpath_count_rm0_clr <- readRDS("~/Documents/Research/ASD/Output/3_metagenomics/diffabundance/MetaCyc_pathway_clr_rm0.rds")
+ancom_table_mcpath_dir <- paste(out_dir_mb, "/microbiome_func_MetaCycpathway_ancom_table_lwas_hit_asd_iqdq_sleep.rds", sep = "")
+ancom_table_taxa_dir <- paste(out_dir_mb, "/microbiome_taxa_counts_ancom_table_lwas_hit_asd_iqdq_sleep.rds", sep = "")
+metadata <- ancom_table$meta_data
+lipid_pc_asd_iqdq_sleep <- readRDS(ancom_table_taxa_dir)$meta_data %>% dplyr::select(c("MG_SampleID", "PC1_lwas_ASD", "PC1_lwas_IQDQ", "PC1_lwas_sleep")) 
+
+# - reverse LWAS PC based so direction matches
+lipid_pc_asd_iqdq_sleep <- lipid_pc_asd_iqdq_sleep %>% mutate(PC1_lwas_ASD = -1 * PC1_lwas_ASD) %>% mutate(PC1_lwas_sleep = -1 * PC1_lwas_sleep)
+
+```
+
+**clr transform on this specific filtered dataset**
+
+```{r}
+
+# Taxa
+ancom_table_taxa <- readRDS(ancom_table_taxa_dir)
+# Perform clr
+taxa_count_rm0_clr <- ancom_table_taxa$feature_table
+taxa_count_rm0_clr.tmp <- logratio.transfo(t(as.matrix(taxa_count_rm0_clr)), logratio = "CLR", offset = 0.001)
+class(taxa_count_rm0_clr.tmp) <- "matrix"
+taxa_count_rm0_clr <- data.frame(VariableID = colnames(taxa_count_rm0_clr.tmp), t(taxa_count_rm0_clr.tmp))
+
+# Func
+ancom_table_mcpath <- readRDS(ancom_table_mcpath_dir)
+# Perform clr
+mcpath_count_rm0_clr <- ancom_table_mcpath$feature_table
+mcpath_count_rm0_clr.tmp <- logratio.transfo(t(as.matrix(mcpath_count_rm0_clr)), logratio = "CLR", offset = 0.001)
+class(mcpath_count_rm0_clr.tmp) <- "matrix"
+mcpath_count_rm0_clr <- data.frame(VariableID = colnames(mcpath_count_rm0_clr.tmp), t(mcpath_count_rm0_clr.tmp))
+
+```
+
+### ASD
+
+```{r}
+
+ancom_plot_taxa_out <- paste(out_dir_mb, "/microbiome_taxa_counts_lwas_asd_covdemodiet", sep = "")
+ancom_full_taxa <- read.delim(paste(ancom_plot_taxa_out, "_anno.txt", sep = ""), header = T, as.is = T)
+ancom_plot_mcpath_out <- paste(out_dir_mb, "/microbiome_func_MetaCycpathway_lwas_asd_covdemodiet", sep = "")
+ancom_full_mcpath <- read.delim(paste(ancom_plot_mcpath_out, "_anno.txt", sep = ""), header = T, as.is = T)
+
+# Take differentially-abundant species and add to pheno
+# - Subset the taxa/MetaCyc pathway data
+taxa_count_rm0_clr.tmp <- taxa_count_rm0_clr %>% filter(VariableID %in% (ancom_full_taxa %>% filter(quantile >= 0.6) %>% pull(label)))
+mcpath_count_rm0_clr.tmp <- mcpath_count_rm0_clr %>% filter(VariableID %in% (ancom_full_mcpath %>% filter(quantile >= 0.6) %>% pull(label)))
+mb_sig_rm0_clr <- rbind(taxa_count_rm0_clr.tmp, mcpath_count_rm0_clr.tmp)
+for (l in 1:nrow(mb_sig_rm0_clr)) {
+  dat <- as.vector(as.matrix(mb_sig_rm0_clr[l,2:ncol(mb_sig_rm0_clr)]))
+  hist(dat)
+}
+# - Munge to join to pheno dataframe
+tmp <- data.frame(MG_SampleID = colnames(mb_sig_rm0_clr)[2:ncol(mb_sig_rm0_clr)], t(mb_sig_rm0_clr[,2:ncol(mb_sig_rm0_clr)]))
+mcpathn <- gsub("[^[:alnum:] ]", ".", mb_sig_rm0_clr$VariableID)
+mcpathn <- paste("mb_", gsub(" ", ".", mcpathn), sep = "")
+colnames(tmp) <- c("MG_SampleID", mcpathn)
+# - Join data
+pheno_mcpath <- inner_join(pheno, tmp, by = "MG_SampleID")
+
+# Add lipid PC data
+pheno_mcpath_lipid <- inner_join(pheno_mcpath, lipid_pc_asd_iqdq_sleep, by = "MG_SampleID")
+    
+# ANOVA model
+lwas_anova_asd <- tidy(aov(formula(paste("PC1_lwas_ASD ~ age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + ASD + PC3_diet_pe", paste(mcpathn, collapse = "+"), sep = "+")), data = pheno_mcpath_lipid %>% filter(!IID %in% outliers_storage.id))) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+datatable(lwas_anova_asd)
+
+lwas_anova_asd_nodietmb <- tidy(aov(formula(paste("PC1_lwas_ASD ~ age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + ASD", sep = "+")), data = inner_join(lipid_pca_asd, pheno %>% dplyr::select(c("IID", "age", "age2", "sex", "bmiz", "Batch", "InjectionOrder", "storage_blood_days", "ASD")), by = "IID") %>% filter(!IID %in% outliers_storage.id))) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+mod0 <- glm(formula(paste("ASD ~ age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + PC1_lwas_ASD + PC3_diet_pe", sep = "+")), data = pheno_mcpath_lipid %>% filter(!IID %in% outliers_storage.id), family = "binomial")
+mod1 <- glm(formula(paste("ASD ~ age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + PC1_lwas_ASD + PC3_diet_pe", paste(mcpathn, collapse = "+"), sep = "+")), data = pheno_mcpath_lipid %>% filter(!IID %in% outliers_storage.id), family = "binomial")
+
+summary(mod0)
+summary(mod1)
+lrtest(mod0,mod1)
+
+# Sensitivity for lipidome cholesterol
+lwas_anova_asd_cholesterol0 <- tidy(aov(formula(paste("PC1_lwas_ASD ~ age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + ASD + PC3_diet_pe", paste(mcpathn, collapse = "+"), "cholesterol_lipidome", sep = "+")), data = pheno_mcpath_lipid %>% filter(!IID %in% outliers_storage.id))) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+lwas_anova_asd_cholesterol1 <- tidy(aov(formula(paste("PC1_lwas_ASD ~ cholesterol_lipidome + age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + ASD + PC3_diet_pe", paste(mcpathn, collapse = "+"), sep = "+")), data = pheno_mcpath_lipid %>% filter(!IID %in% outliers_storage.id))) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+# Sensitivity for lipidome triglycerides
+lwas_anova_asd_triglycerides0 <- tidy(aov(formula(paste("PC1_lwas_ASD ~ age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + ASD + PC3_diet_pe", paste(mcpathn, collapse = "+"), "triglycerides_lipidome", sep = "+")), data = pheno_mcpath_lipid %>% filter(!IID %in% outliers_storage.id))) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+lwas_anova_asd_triglycerides1 <- tidy(aov(formula(paste("PC1_lwas_ASD ~ triglycerides_lipidome + age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + ASD + PC3_diet_pe", paste(mcpathn, collapse = "+"), sep = "+")), data = pheno_mcpath_lipid %>% filter(!IID %in% outliers_storage.id))) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+```
+
+## IQ/DQ
+
+```{r}
+
+ancom_plot_taxa_out <- paste(out_dir_mb, "/microbiome_taxa_counts_lwas_iqdq_covdemodiet", sep = "")
+ancom_full_taxa <- read.delim(paste(ancom_plot_taxa_out, "_anno.txt", sep = ""), header = T, as.is = T)
+ancom_plot_mcpath_out <- paste(out_dir_mb, "/microbiome_func_MetaCycpathway_lwas_iqdq_covdemodiet", sep = "")
+ancom_full_mcpath <- read.delim(paste(ancom_plot_mcpath_out, "_anno.txt", sep = ""), header = T, as.is = T)
+
+# - Subset the taxa/MetaCyc pathway data
+taxa_count_rm0_clr.tmp <- taxa_count_rm0_clr %>% filter(VariableID %in% (ancom_full_taxa %>% filter(quantile >= 0.6) %>% pull(label)))
+mcpath_count_rm0_clr.tmp <- mcpath_count_rm0_clr %>% filter(VariableID %in% (ancom_full_mcpath %>% filter(quantile >= 0.6) %>% pull(label)))
+mb_sig_rm0_clr <- rbind(taxa_count_rm0_clr.tmp, mcpath_count_rm0_clr.tmp)
+for (l in 1:nrow(mb_sig_rm0_clr)) {
+  dat <- as.vector(as.matrix(mb_sig_rm0_clr[l,2:ncol(mb_sig_rm0_clr)]))
+  hist(dat)
+}
+# - Munge to join to pheno dataframe
+tmp <- data.frame(MG_SampleID = colnames(mb_sig_rm0_clr)[2:ncol(mb_sig_rm0_clr)], t(mb_sig_rm0_clr[,2:ncol(mb_sig_rm0_clr)]))
+mcpathn <- gsub("[^[:alnum:] ]", ".", mb_sig_rm0_clr$VariableID)
+mcpathn <- paste("mb_", gsub(" ", ".", mcpathn), sep = "")
+colnames(tmp) <- c("MG_SampleID", mcpathn)
+# - Join data
+pheno_mcpath <- inner_join(pheno, tmp, by = "MG_SampleID")
+
+# Add lipid PC data
+pheno_mcpath_lipid <- inner_join(pheno_mcpath, lipid_pc_asd_iqdq_sleep, by = "MG_SampleID")
+    
+# ANOVA model
+lwas_anova_iqdq <- tidy(aov(formula(paste("PC1_lwas_IQDQ ~ age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + iq_dq_wisccomp_mselnv_nih + meds_adhd_behavioural + PC1_diet_pe", paste(mcpathn, collapse = "+"), sep = "+")), data = pheno_mcpath_lipid)) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+datatable(lwas_anova_iqdq)
+
+iqdq_anova <- tidy(aov(formula(paste("iq_dq_wisccomp_mselnv_nih ~ age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + PC1_lwas_IQDQ + PC1_diet_pe + meds_adhd_behavioural", paste(mcpathn, collapse = "+"), sep = "+")), data = pheno_mcpath_lipid)) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+datatable(iqdq_anova)
+
+lwas_anova_iqdq_nodietmb <- tidy(aov(formula(paste("PC1_lwas_IQDQ ~ age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + iq_dq_wisccomp_mselnv_nih", sep = "+")), data = inner_join(lipid_pca_iqdq, pheno %>% dplyr::select(c("IID", "age", "age2", "sex", "bmiz", "Batch", "InjectionOrder", "storage_blood_days", "iq_dq_wisccomp_mselnv_nih")), by = "IID") %>% filter(!IID %in% outliers_storage.id))) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+datatable(lwas_anova_iqdq_nodietmb)
+
+lwas_anova_iqdq_nomb <- tidy(aov(formula(paste("PC1_lwas_IQDQ ~ age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + iq_dq_wisccomp_mselnv_nih + PC1_diet_pe", sep = "+")), data = inner_join(lipid_pca_iqdq, pheno %>% dplyr::select(c("IID", "age", "age2", "sex", "bmiz", "Batch", "InjectionOrder", "storage_blood_days", "iq_dq_wisccomp_mselnv_nih", "PC1_diet_pe")), by = "IID") %>% filter(!IID %in% outliers_storage.id))) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+datatable(lwas_anova_iqdq_nomb)
+
+# Sensitivity analysis for cholesterol
+lwas_anova_iqdq_cholesterol0 <- tidy(aov(formula(paste("PC1_lwas_IQDQ ~ age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + iq_dq_wisccomp_mselnv_nih + meds_adhd_behavioural + PC1_diet_pe", paste(mcpathn, collapse = "+"), "cholesterol_lipidome", sep = "+")), data = pheno_mcpath_lipid)) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+lwas_anova_iqdq_cholesterol1 <- tidy(aov(formula(paste("PC1_lwas_IQDQ ~ cholesterol_lipidome + age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + iq_dq_wisccomp_mselnv_nih + meds_adhd_behavioural + PC1_diet_pe", paste(mcpathn, collapse = "+"), sep = "+")), data = pheno_mcpath_lipid)) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+# Sensitivity for lipidome triglycerides
+lwas_anova_iqdq_triglycerides0 <- tidy(aov(formula(paste("PC1_lwas_IQDQ ~ age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + iq_dq_wisccomp_mselnv_nih + meds_adhd_behavioural + PC1_diet_pe", paste(mcpathn, collapse = "+"), "triglycerides_lipidome", sep = "+")), data = pheno_mcpath_lipid)) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+lwas_anova_iqdq_triglycerides1 <- tidy(aov(formula(paste("PC1_lwas_IQDQ ~ triglycerides_lipidome + age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + iq_dq_wisccomp_mselnv_nih + meds_adhd_behavioural + PC1_diet_pe", paste(mcpathn, collapse = "+"), sep = "+")), data = pheno_mcpath_lipid)) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+```
+
+## Sleep problems
+
+```{r}
+
+ancom_plot_taxa_out <- paste(out_dir_mb, "/microbiome_taxa_counts_lwas_sleep_covdemodiet", sep = "")
+ancom_full_taxa <- read.delim(paste(ancom_plot_taxa_out, "_anno.txt", sep = ""), header = T, as.is = T)
+ancom_plot_mcpath_out <- paste(out_dir_mb, "/microbiome_func_MetaCycpathway_lwas_sleep_covdemodiet", sep = "")
+ancom_full_mcpath <- read.delim(paste(ancom_plot_mcpath_out, "_anno.txt", sep = ""), header = T, as.is = T)
+
+# - Subset the MetaCyc pathway data
+taxa_count_rm0_clr.tmp <- taxa_count_rm0_clr %>% filter(VariableID %in% (ancom_full_taxa %>% filter(quantile >= 0.6) %>% pull(label)))
+mcpath_count_rm0_clr.tmp <- mcpath_count_rm0_clr %>% filter(VariableID %in% (ancom_full_mcpath %>% filter(quantile >= 0.6) %>% pull(label)))
+mb_sig_rm0_clr <- rbind(taxa_count_rm0_clr.tmp, mcpath_count_rm0_clr.tmp)
+for (l in 1:nrow(mb_sig_rm0_clr)) {
+  dat <- as.vector(as.matrix(mb_sig_rm0_clr[l,2:ncol(mb_sig_rm0_clr)]))
+  hist(dat)
+}
+# - Munge to join to pheno dataframe
+tmp <- data.frame(MG_SampleID = colnames(mb_sig_rm0_clr)[2:ncol(mb_sig_rm0_clr)], t(mb_sig_rm0_clr[,2:ncol(mb_sig_rm0_clr)]))
+mcpathn <- gsub("[^[:alnum:] ]", ".", mb_sig_rm0_clr$VariableID)
+mcpathn <- paste("mb_", gsub(" ", ".", mcpathn), sep = "")
+colnames(tmp) <- c("MG_SampleID", mcpathn)
+# - Join data
+pheno_mcpath <- inner_join(pheno, tmp, by = "MG_SampleID")
+
+# Add lipid PC data
+pheno_mcpath_lipid <- inner_join(pheno_mcpath, lipid_pc_asd_iqdq_sleep, by = "MG_SampleID")
+    
+# ANOVA model
+lwas_anova_sleep <- tidy(aov(formula(paste("PC1_lwas_sleep ~ age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + sleep_cshq_total + meds_adhd_behavioural + cam_fishoil_dha + PC1_diet_pe + PC3_diet_pe", paste(mcpathn, collapse = "+"), sep = "+")), data = pheno_mcpath_lipid)) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+datatable(lwas_anova_sleep)
+
+sleep_anova <- tidy(aov(formula(paste("sleep_cshq_total ~ age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + PC1_lwas_sleep + meds_adhd_behavioural + cam_fishoil_dha + PC1_diet_pe + PC3_diet_pe", paste(mcpathn, collapse = "+"), sep = "+")), data = pheno_mcpath_lipid)) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+datatable(sleep_anova)
+
+lwas_anova_sleep_nodietmb <- tidy(aov(formula(paste("PC1_lwas_sleep ~ age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + sleep_cshq_total + meds_adhd_behavioural + cam_fishoil_dha", sep = "+")), data = inner_join(lipid_pca_sleep, pheno %>% dplyr::select(c("IID", "age", "age2", "sex", "bmiz", "Batch", "InjectionOrder", "storage_blood_days", "sleep_cshq_total", "meds_adhd_behavioural", "cam_fishoil_dha")), by = "IID") %>% filter(!IID %in% outliers_storage.id))) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+datatable(lwas_anova_sleep_nodietmb)
+
+lwas_anova_sleep_nomb <- tidy(aov(formula(paste("PC1_lwas_sleep ~ age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + sleep_cshq_total + meds_adhd_behavioural + cam_fishoil_dha + PC1_diet_pe + PC3_diet_pe", sep = "+")), data = inner_join(lipid_pca_sleep, pheno %>% dplyr::select(c("IID", "age", "age2", "sex", "bmiz", "Batch", "InjectionOrder", "storage_blood_days", "sleep_cshq_total", "meds_adhd_behavioural", "cam_fishoil_dha", "PC1_diet_pe", "PC3_diet_pe")), by = "IID") %>% filter(!IID %in% outliers_storage.id))) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+datatable(lwas_anova_sleep_nomb)
+
+# Sensitivity analysis for cholesterol
+lwas_anova_sleep_cholesterol0 <- tidy(aov(formula(paste("PC1_lwas_sleep ~ age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + sleep_cshq_total + meds_adhd_behavioural + cam_fishoil_dha + PC1_diet_pe + PC3_diet_pe", paste(mcpathn, collapse = "+"), "cholesterol_lipidome", sep = "+")), data = pheno_mcpath_lipid)) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+lwas_anova_sleep_cholesterol1 <- tidy(aov(formula(paste("PC1_lwas_sleep ~ cholesterol_lipidome + age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + sleep_cshq_total + meds_adhd_behavioural + cam_fishoil_dha + PC1_diet_pe + PC3_diet_pe", paste(mcpathn, collapse = "+"), sep = "+")), data = pheno_mcpath_lipid)) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+# Sensitivity analysis for triglycerides
+lwas_anova_sleep_triglycerides0 <- tidy(aov(formula(paste("PC1_lwas_sleep ~ age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + sleep_cshq_total + meds_adhd_behavioural + cam_fishoil_dha + PC1_diet_pe + PC3_diet_pe", paste(mcpathn, collapse = "+"), "triglycerides_lipidome", sep = "+")), data = pheno_mcpath_lipid)) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+lwas_anova_sleep_triglycerides1 <- tidy(aov(formula(paste("PC1_lwas_sleep ~ triglycerides_lipidome + age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + sleep_cshq_total + meds_adhd_behavioural + cam_fishoil_dha + PC1_diet_pe + PC3_diet_pe", paste(mcpathn, collapse = "+"), sep = "+")), data = pheno_mcpath_lipid)) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
+
+```
+
+### Plots
+
+```{r}
+
+lwas_anova_agg <- rbind(data.frame(Pheno = paste("ASD (", lwas_anova_asd$df[nrow(lwas_anova_asd)] + nrow(lwas_anova_asd) - 1, ")", sep = ""), lwas_anova_asd),
+                        data.frame(Pheno = paste("IQ/DQ (", lwas_anova_iqdq$df[nrow(lwas_anova_iqdq)] + nrow(lwas_anova_iqdq) - 1, ")", sep = ""), lwas_anova_iqdq),
+                        data.frame(Pheno = paste("Sleep (", lwas_anova_sleep$df[nrow(lwas_anova_sleep)] + nrow(lwas_anova_sleep) - 1, ")", sep = ""), lwas_anova_sleep)) %>%
+  mutate(variable = ifelse(grepl("mb_", term), "microbiome", term)) %>% 
+  mutate(variable = ifelse(grepl("diet", variable), "diet", variable)) %>%
+  mutate(variable = ifelse(grepl("meds|cam", variable), "meds", variable)) %>%
+  mutate(variable = ifelse(variable %in% c("ASD", "iq_dq_wisccomp_mselnv_nih", "sleep_cshq_total"), "trait", variable)) %>%
+  mutate(variable = ifelse(variable %in% c("Batch", "InjectionOrder", "storage_blood_days"), "batch", variable)) %>%
+  mutate(variable = ifelse(grepl("age", variable), "age1+2", variable)) %>%
+  filter(variable != "Residuals") %>% 
+  mutate(variable = ifelse(grepl("bmiz", variable), "BMI(z)", variable)) %>%
+  mutate(MatchVariable = match(variable, rev(c("age1+2", "sex", "BMI(z)", "batch", "trait", "meds", "diet", "microbiome"))))
+
+lwas_anova_agg %>%
+  mutate(variable = fct_reorder(variable, MatchVariable)) %>%
+  ggplot(aes(x = Pheno, y = sumsq_prop, fill = variable)) +
+  geom_bar(position="stack", stat="identity") +
+  scale_fill_brewer(palette = "Dark2") +
+  xlab("Lipidome profile (LWAS hit PC1)") + 
+  ylab("Variance (%) explained by each variable") +
+  theme_bw() + theme(legend.position = "right", text = element_text(size = 20))
+
+ggsave(paste(out_dir_mb, "/lwas_pc1_asd_iqdq_sleep_variance.png", sep = ""), height = 7, width = 6.5)
+ggsave(paste(out_dir_mb, "/lwas_pc1_asd_iqdq_sleep_variance.svg", sep = ""), height = 7, width = 6.5)
+
+# Sensitivity analysis for lipidome cholesterol, as the first term
+lwas_anova_cholesterol1_agg <- rbind(data.frame(Pheno = paste("ASD (", lwas_anova_asd_cholesterol1$df[nrow(lwas_anova_asd_cholesterol1)] + nrow(lwas_anova_asd_cholesterol1) - 1, ")", sep = ""), lwas_anova_asd_cholesterol1),
+                        data.frame(Pheno = paste("IQ/DQ (", lwas_anova_iqdq_cholesterol1$df[nrow(lwas_anova_iqdq_cholesterol1)] + nrow(lwas_anova_iqdq_cholesterol1) - 1, ")", sep = ""), lwas_anova_iqdq_cholesterol1),
+                        data.frame(Pheno = paste("Sleep (", lwas_anova_sleep_cholesterol1$df[nrow(lwas_anova_sleep_cholesterol1)] + nrow(lwas_anova_sleep_cholesterol1) - 1, ")", sep = ""), lwas_anova_sleep_cholesterol1)) %>%
+  mutate(variable = ifelse(grepl("mb", term), "microbiome", term)) %>% 
+  mutate(variable = ifelse(grepl("diet", variable), "diet", variable)) %>%
+  mutate(variable = ifelse(grepl("meds|cam", variable), "meds", variable)) %>%
+  mutate(variable = ifelse(variable %in% c("ASD", "iq_dq_wisccomp_mselnv_nih", "sleep_cshq_total"), "trait", variable)) %>%
+  mutate(variable = ifelse(variable %in% c("Batch", "InjectionOrder", "storage_blood_days"), "batch", variable)) %>%
+  mutate(variable = ifelse(variable %in% c("age", "age2", "sex"), "age1+2,sex", variable)) %>%
+  mutate(variable = ifelse(grepl("bmiz", variable), "BMI(z)", variable)) %>%
+  mutate(variable = ifelse(variable == "cholesterol_lipidome", "cholesterol", variable)) %>%
+  filter(variable != "Residuals") %>% 
+  mutate(MatchVariable = match(variable, rev(c("cholesterol", "age1+2,sex", "BMI(z)", "batch", "trait", "meds", "diet", "microbiome"))))
+
+lwas_anova_cholesterol1_agg %>%
+  mutate(variable = fct_reorder(variable, MatchVariable)) %>%
+  ggplot(aes(x = Pheno, y = sumsq_prop, fill = variable)) +
+  geom_bar(position="stack", stat="identity") +
+  scale_fill_brewer(palette = "Dark2") +
+  xlab("Lipidome profile (LWAS hit PC1)") + 
+  ylab("Variance (%) explained by each variable") +
+  theme_bw() + theme(legend.position = "right", text = element_text(size = 20))
+
+ggsave(paste(out_dir_mb, "/lwas_pc1_asd_iqdq_sleep_variance_cholesterolcondition.png", sep = ""), height = 7, width = 6.5)
+ggsave(paste(out_dir_mb, "/lwas_pc1_asd_iqdq_sleep_variance_cholesterolcondition.svg", sep = ""), height = 7, width = 6.5)
+
+# Sensitivity analysis for lipidome triglycerides, as the first term
+lwas_anova_triglycerides1_agg <- rbind(data.frame(Pheno = paste("ASD (", lwas_anova_asd_triglycerides1$df[nrow(lwas_anova_asd_triglycerides1)] + nrow(lwas_anova_asd_triglycerides1) - 1, ")", sep = ""), lwas_anova_asd_triglycerides1),
+                        data.frame(Pheno = paste("IQ/DQ (", lwas_anova_iqdq_triglycerides1$df[nrow(lwas_anova_iqdq_triglycerides1)] + nrow(lwas_anova_iqdq_triglycerides1) - 1, ")", sep = ""), lwas_anova_iqdq_triglycerides1),
+                        data.frame(Pheno = paste("Sleep (", lwas_anova_sleep_triglycerides1$df[nrow(lwas_anova_sleep_triglycerides1)] + nrow(lwas_anova_sleep_triglycerides1) - 1, ")", sep = ""), lwas_anova_sleep_triglycerides1)) %>%
+  mutate(variable = ifelse(grepl("mb", term), "microbiome", term)) %>% 
+  mutate(variable = ifelse(grepl("diet", variable), "diet", variable)) %>%
+  mutate(variable = ifelse(grepl("meds|cam", variable), "meds", variable)) %>%
+  mutate(variable = ifelse(variable %in% c("ASD", "iq_dq_wisccomp_mselnv_nih", "sleep_cshq_total"), "trait", variable)) %>%
+  mutate(variable = ifelse(variable %in% c("Batch", "InjectionOrder", "storage_blood_days"), "batch", variable)) %>%
+  mutate(variable = ifelse(variable %in% c("age", "age2", "sex"), "age1+2,sex", variable)) %>%
+  mutate(variable = ifelse(grepl("bmiz", variable), "BMI(z)", variable)) %>%
+  mutate(variable = ifelse(variable == "triglycerides_lipidome", "triglycerides", variable)) %>%
+  filter(variable != "Residuals") %>% 
+  mutate(MatchVariable = match(variable, rev(c("triglycerides", "age1+2,sex", "BMI(z)", "batch", "trait", "meds", "diet", "microbiome"))))
+
+lwas_anova_triglycerides1_agg %>%
+  mutate(variable = fct_reorder(variable, MatchVariable)) %>%
+  ggplot(aes(x = Pheno, y = sumsq_prop, fill = variable)) +
+  geom_bar(position="stack", stat="identity") +
+  scale_fill_brewer(palette = "Dark2") +
+  xlab("Lipidome profile (LWAS hit PC1)") + 
+  ylab("Variance (%) explained by each variable") +
+  theme_bw() + theme(legend.position = "right", text = element_text(size = 20))
+
+ggsave(paste(out_dir_mb, "/lwas_pc1_asd_iqdq_sleep_variance_triglyceridescondition.png", sep = ""), height = 7, width = 6.5)
+ggsave(paste(out_dir_mb, "/lwas_pc1_asd_iqdq_sleep_variance_triglyceridescondition.svg", sep = ""), height = 7, width = 6.5)
+
+
+```

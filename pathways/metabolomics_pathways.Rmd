@@ -1,0 +1,1094 @@
+---
+title: "Metabolomics LSEA analyses"
+author: "Chloe Yap"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  epuRate::PCTG:
+    toc: TRUE
+    number_sections: FALSE
+    code_folding: "hide"
+knit: (function(inputFile, encoding) { 
+          rmarkdown::render(inputFile,
+                        encoding=encoding, 
+                        output_file='metabolomics_osca_analysis_INT.html') })
+---
+
+# Set-up
+
+## Libraries
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# You need these libraries to run this template:
+library(rmarkdown)    # install.packages("rmarkdown") 
+library(epuRate)      # devtools::install_github("holtzy/epuRate", force=TRUE)
+library(tidyverse)
+library(data.table)
+library(factoextra)
+library(GGally)
+library(ggforce)
+library(corrplot)
+library(devtools)
+#devtools::install_github("vqv/ggbiplot")
+library(ggbiplot)
+library(caret)
+library(DT)
+library(vegan)
+library(ComplexHeatmap)
+library(colorspace)
+library(MASS)
+library(RColorBrewer)
+library(ggrepel)
+
+library(fgsea) #install_github("ctlab/fgsea")
+library(fastmatch)
+library(wesanderson)
+library(svglite)
+#library(UpSetR)
+
+```
+
+## Directories
+
+```{r}
+
+lipids_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Individual_lipids.csv"
+lipids_class_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Total_lipids_class.csv"
+batch_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Annotation_Batch.csv"
+outliers_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Sample_outliers.csv"
+outliers_lipids_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/analysis/outliers_lipids_batch.id"
+anno_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/5_metabolomics/Baker/2021_06_18_AUTISM_Data_Samples_only_Annotation.csv"
+pheno_aab_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/Phenotype/extracted_pheno/cognitive_crossancestry_child.pheno"
+pheno_aab_qtab_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/Phenotype/extracted_pheno/AAB_QTAB_aggregated.pheno"
+diet_raw_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/Diet/AES_ACRC_QTAB/AES_ACRC_QTAB_diet_metabolomics.txt"
+diet_pc_dir <- "/Users/uqcyap3/Documents/Research/ASD/Data/Diet/AES_ACRC_QTAB/AES_ACRC_QTAB_diet_PC_metabolomics_264_pcenergy_PC13_clr_dietonly.csv"
+##### ADD pePCs on new subset of data
+
+```
+
+## Read-in data
+
+```{r}
+
+lipids <- read.csv(lipids_dir, header = T, as.is = T)
+lipids_class <- read.csv(lipids_class_dir, header = T, as.is = T)
+batch <- read.csv(batch_dir, header = T, as.is = T)
+outliers <- read.csv(outliers_dir, header = T, as.is = T)
+outliers_lipids <- read.delim(outliers_lipids_dir, header = F, as.is = T)
+anno <- read.csv(anno_dir, header = T, as.is = T)
+anno_class.tmp <- read.csv(lipids_class_dir, header = F, as.is = T)
+pheno_aab_full <- read.delim(pheno_aab_dir, header = T, as.is = T)
+pheno_aab_qtab <- read.delim(pheno_aab_qtab_dir, header = T, as.is = T)
+diet_raw <- read.delim(diet_raw_dir, header = T, as.is = T)
+diet_pc <- read.csv(diet_pc_dir, header = T, as.is = T)
+
+```
+
+## Clean data
+
+```{r}
+
+pheno_full <- left_join(pheno_aab_qtab, pheno_aab_full)
+pheno.tmp <- left_join(lipids[,1:2], pheno_full)
+pheno <- pheno.tmp[order(match(pheno.tmp$IID, lipids$IID)),]
+pheno <- left_join(pheno, batch, by = "RunID")
+
+rm_oldpePC <- grep("diet_pe", colnames(pheno))
+pheno <- pheno[,-rm_oldpePC]
+pheno <- left_join(pheno, diet_pc, by = "IID")
+
+micro_col <- c("fibre","thiamin","riboflavin","niacinequiv","vitc","folate","vita","retinol","betacarotine","sodium","potassium","magnesium","calcium","phosphorus","iron","zinc")
+macro_col <- c("protein","fats","satfats","polyfats","monofats","cholesterol","carbohydrate","sugars")
+pe_col <- c("peprotein", "pecarbohydrate", "pefats", "pesatfats", "pepolyfats", "pemonofats", "pealcohol", "pecore", "penoncore", "peveg", "pefruit", "pemeat", "pealt", "pegrains", "pedairy", "pesweet_drink", "pepack_snack", "peconfect", "pebaked_products", "petakeaway", "pecondiments", "pefatty_meats", "pefatty_meats", "pealcohol_bev", "pemisc")
+arfs_col <- colnames(diet_raw)[grep("^arfs_", colnames(diet_raw))]
+diet_derived <- diet_raw %>% dplyr::select(IID, all_of(c(micro_col, macro_col, pe_col, arfs_col)))
+pheno <- left_join(pheno, diet_derived, by = "IID")
+
+# Tidy up columns
+pheno$iq_dq_wisccomp_mselnv_nih <- as.numeric(pheno$iq_dq_wisccomp_mselnv_nih)
+
+identical(pheno$IID, lipids$IID)
+identical(pheno$IID, lipids_class$IID)
+
+# Add outliers column
+pheno$outliers <- as.character(ifelse(pheno$IID %in% outliers$IID, pheno$IID, NA))
+
+# Add adverse events column
+adverse_event.id <- c(2202542, 4406321, 3304969, 2202511, 4406320, 4406272, 3392391, 4406348, 1101685, 1101639, 2202554, 3304926)
+pheno$adverse_event <- ifelse(pheno$IID %in% adverse_event.id, pheno$IID, NA)
+
+# Check that there are no cotwins in the dataset
+qtabtwin <- c(258404, 258108, 258580, 258625, 258541, 258139, 258752, 258810, 258591, 258235, 258724, 258796, 258367, 258934, 258898, 258682, 258631, 258819, 258148, 258218, 258009, 258003, 258021, 25875)
+qtabcotwin <- c(258403, 258175, 258823, 258505, 258046, 258348, 258826, 258093, 258639, 258757, 258634, 258872, 258561, 258536, 258794, 258820, 258429, 258181, 258569, 258294, 258495, 258804, 25883)
+length(which(pheno$IID %in% qtabcotwin))
+
+# Check coding
+pheno$sex <- as.factor(pheno$sex)
+
+# Add age^2
+pheno$age2 <- pheno$age^2
+
+# Add periodic functions for time of sample collection
+# - based on eyeballing the lipid vs collection time graphs, it looksl ike the cosine transform generalises better across lipids
+#pheno$collection_blood_time_sin <- sin((pheno$collection_blood_time/2400)*pi)
+#plot(pheno$collection_blood_time, pheno$collection_blood_time_sin)
+pheno$collection_blood_time_cos <- sin((pheno$collection_blood_time/2400)*2*pi)
+plot(pheno$collection_blood_time, pheno$collection_blood_time_cos)
+
+# Add ifnerred clinical lipids variables
+identical(lipids$IID, lipids_class$IID)
+identical(pheno$IID, lipids_class$IID)
+pheno$cholesterol_lipidome <- lipids$COH + lipids_class$Total.CE
+pheno$triglycerides_lipidome <- lipids_class$Total.TG.SIM.
+
+# Make annotation column with matching format to headers
+anno$Lipid.species_header <- gsub("[^[:alnum:] ]", ".", anno$Lipid.species)
+anno$Lipid.species_header <- gsub(" ", ".", anno$Lipid.species_header)
+
+# Make annotation file for lipids_class
+anno_class <- data.frame(lipid = colnames(lipids_class)[3:ncol(lipids_class)], Lipid.species = as.vector(t(anno_class.tmp[1,3:ncol(anno_class.tmp)])), Lipid.species_header = colnames(lipids_class)[3:ncol(lipids_class)], Lipid.class = as.vector(t(anno_class.tmp[1,3:ncol(anno_class.tmp)])))
+anno_class[] <- lapply(anno_class, as.character)
+
+# Remove TG [NL] from classes and TG [SIM] from lipids
+rm_lipids_class <- grep(".NL.", colnames(lipids_class))
+rm_lipids <- grep(".SIM.", colnames(lipids))
+lipids_class <- lipids_class[,-rm_lipids_class]
+lipids <- lipids[,-rm_lipids]
+
+# Lipid classes
+rownames(lipids_class) <- lipids_class$IID
+lipids_class.long <- melt(lipids_class, id.vars = c("RunID", "IID"), variable.name = "lipid", value.name = "pmol_mL")
+lipids_class.long <- left_join(lipids_class.long, pheno, by = "IID")
+lipids_class.long <- left_join(lipids_class.long, anno_class, by = "lipid")
+
+# Lipids
+rownames(lipids) <- lipids$IID
+colnames(lipids) <- gsub("[^[:alnum:] ]", ".", colnames(lipids))
+lipids.long <- melt(lipids, id.vars = c("RunID", "IID"), variable.name = "lipid", value.name = "pmol_mL")
+lipids.long <- left_join(lipids.long, pheno)
+anno.tmp <- anno
+colnames(anno.tmp)[which(colnames(anno.tmp) == "Lipid.species_header")] <- "lipid"
+lipids.long <- left_join(lipids.long, anno.tmp, by = "lipid")
+
+```
+
+### Exclude participants
+
+```{r}
+
+# Keep back-ups
+lipids_class_keepSMS <- lipids_class
+lipids_keepSMS <- lipids
+pheno_keepSMS <- pheno
+lipids.long_keepSMS <- lipids.long
+
+# Exclude participant
+lipids_class <- lipids_class %>% filter(IID != 4494902)
+lipids <- lipids %>% filter(IID != 4494902)
+pheno <- pheno %>% filter(IID != 4494902)
+lipids.long <- lipids.long %>% filter(IID != 4494902)
+lipids_class.long <- lipids_class.long %>% filter(IID != 4494902)
+
+# CHOOSE to remove outliers in the OSCA script
+# Keep outliers
+lipids_class_outliers <- lipids_class
+lipids_outliers <- lipids
+pheno_outliers <- pheno
+lipids.long_outliers <- lipids.long
+
+# Exclude outliers
+outliers.id <- as.vector(outliers$IID)
+lipids_class <- lipids_class %>% filter(!IID %in% outliers.id)
+lipids <- lipids %>% filter(!IID %in% outliers.id)
+pheno <- pheno %>% filter(!IID %in% outliers.id)
+lipids.long <- lipids.long %>% filter(!IID %in% outliers.id)
+lipids_class.long <- lipids_class.long %>% filter(!IID %in% outliers.id)
+
+# rownames
+rownames(lipids_class) <- lipids_class$IID
+rownames(lipids) <- lipids$IID
+rownames(pheno) <- lipids$IID
+
+```
+
+### Exclude lipids
+
+```{r}
+
+# Exclude outliers
+outliers_lipids.id <- as.vector(outliers_lipids$V1)
+#lipids_class <- lipids_class %>% select(-all_of(outliers_lipids.id))
+lipids <- lipids %>% dplyr::select(-all_of(outliers_lipids.id))
+lipids.long <- lipids.long %>% filter(!lipid %in% all_of(outliers_lipids.id))
+lipids_class.long <- lipids_class.long %>% filter(!lipid %in% all_of(outliers_lipids.id))
+
+```
+
+### Exclude storage outliers (for ASD analysis only)
+
+```{r}
+
+outliers_storage <- read.delim("~/Documents/Research/ASD/Data/5_metabolomics/analysis/osca/data/outliers_storage.id", header = T, as.is = T)
+
+```
+
+### Annotation of pathways
+
+- convert lipid names in the annotation to the same as in the lipid matrix
+
+```{r}
+
+lsea_anno <- read.csv("~/Documents/Research/ASD/Data/5_metabolomics/Baker/2022_05_01_Autism_Annotation_Updated_KH.csv", header = F, as.is = T)
+
+# Change names to match those in the dataframes
+lsea_anno_header <- as.matrix(lsea_anno[,3:ncol(lsea_anno)])
+rownames(lsea_anno_header) <- lsea_anno$V2
+lsea_anno_header <- gsub("[^[:alnum:] ]", ".", lsea_anno_header)
+lsea_anno_header <- gsub(" ", ".", lsea_anno_header)
+
+lsea_anno_header.ls <- split(lsea_anno_header, f = rownames(lsea_anno_header))
+
+lsea_anno_header.ls <- lapply(lsea_anno_header.ls, function(x) x[which(x != "")])
+
+lsea_total <- unlist(lapply(lsea_anno_header.ls, function(x) length(which(x != ""))))
+
+```
+
+# Lipid-set enrichment analysis (LSEA method from Corey Giles)
+
+## Set-up
+
+```{r}
+
+source("~/Documents/Research/ASD/Data/5_metabolomics/Baker/LSEA_scripts/2022_01_17 - LSEA setup and functions for Chloe.R")
+
+# 1. Prep lipid/covariate data
+# Merge lipid and covariate data
+lipids_lsea <- lipids %>% inner_join(., pheno %>% dplyr::select(c("IID", "ASD", "iq_dq_wisccomp_mselnv_nih", "sleep_cshq_total", "tanner_genital", "bmiz",  "age", "age2", "sex", "Batch", "InjectionOrder", "storage_blood_days"))) %>% dplyr::select(-c("RunID", "IID"))
+
+# Get lipid names
+lipid_names <- colnames(lipids)[3:ncol(lipids)]
+# Log transform and scale lipid data
+lipids_lsea[,lipid_names] <- scale(log10(lipids_lsea[,lipid_names]))
+
+# - for ASD dataset, removing outliers
+lipids_lsea_asd <- lipids %>% inner_join(., pheno %>% dplyr::select(c("IID", "ASD", "iq_dq_wisccomp_mselnv_nih", "sleep_cshq_total", "tanner_genital", "bmiz",  "age", "age2", "sex", "Batch", "InjectionOrder", "storage_blood_days"))) %>% filter(!IID %in% outliers_storage[,1]) %>% dplyr::select(-c("RunID", "IID"))
+# Get lipid names
+lipid_names <- colnames(lipids)[3:ncol(lipids)]
+# Log transform and scale lipid data
+lipids_lsea_asd[,lipid_names] <- scale(log10(lipids_lsea_asd[,lipid_names]))
+
+# 2. Lipid database
+## Load lipid set database
+## Output is a named list - names are the lipid set names
+## Each list entry is a string/character vector of lipids in each set
+final_list<-load_database("~/Documents/Research/ASD/Data/5_metabolomics/Baker/2022_04_28_Autism_Annotation_Updated_KH.csv")
+
+# 3. Set up dataframe to collect results
+lsea_baker_all <- NULL
+
+```
+
+## ASD
+
+```{r}
+
+# 1. Settings
+## Name of variable of interest
+predictor <- c("ASD")
+## Name of covariates to adjust for
+clinical <- c("age", "age2", "sex", "Batch", "InjectionOrder", "storage_blood_days")
+
+# 2. LSEA linear regression
+## Nothing special here, just a linear regression function
+## Makes lipids the outcome and records the t-statistic for association (will be the same as you get for a logistic regression)
+regression<- LSEA_lm(lipids_lsea_asd, lipid_names, predictor, clinical)
+head(regression)
+
+# 3. Get the correlation between lipids, adjusting for covariates
+## This is quite important, the correlation matric needs to be done on the residualized lipid data
+lipids_lsea_cor <- LSEA_cor(lipids_lsea_asd, lipid_names, clinical)
+lipids_lsea_cor[1:5,1:5]
+
+# 4. LSEA analysis
+## Use "sum" option in this case (sum of t-statistics)
+## The adjustment accounts for the correlation between lipids and shows a perfect 0.05 false positive rate
+## Tests if lipids within a set show 'no association' with the outcome
+res_sum <- LSEA(lipid_sets = final_list,
+               regression = regression,
+               dat_cor = lipids_lsea_cor,
+               analysis="sum")
+
+## View the top few results
+datatable(res_sum[order(res_sum$log10p,decreasing=TRUE),])
+
+lsea_baker_all <- rbind(lsea_baker_all, data.frame(Pheno = predictor, res_sum))
+
+```
+
+## Age
+
+```{r}
+
+# 1. Settings
+## Name of variable of interest
+predictor <- c("age")
+## Name of covariates to adjust for
+clinical <- c("sex", "Batch", "InjectionOrder", "storage_blood_days")
+
+# 2. LSEA linear regression
+## Nothing special here, just a linear regression function
+## Makes lipids the outcome and records the t-statistic for association (will be the same as you get for a logistic regression)
+regression<- LSEA_lm(lipids_lsea, lipid_names, predictor, clinical)
+head(regression)
+
+# 3. Get the correlation between lipids, adjusting for covariates
+## This is quite important, the correlation matric needs to be done on the residualized lipid data
+lipids_lsea_cor <- LSEA_cor(lipids_lsea, lipid_names, clinical)
+lipids_lsea_cor[1:5,1:5]
+
+# 4. LSEA analysis
+## Use "sum" option in this case (sum of t-statistics)
+## The adjustment accounts for the correlation between lipids and shows a perfect 0.05 false positive rate
+## Tests if lipids within a set show 'no association' with the outcome
+res_sum <- LSEA(lipid_sets = final_list,
+               regression = regression,
+               dat_cor = lipids_lsea_cor,
+               analysis="sum")
+
+## View the top few results
+datatable(res_sum[order(res_sum$log10p,decreasing=TRUE),])
+
+lsea_baker_all <- rbind(lsea_baker_all, data.frame(Pheno = predictor, res_sum))
+
+```
+
+## Tanner
+
+```{r}
+
+# 1. Settings
+## Name of variable of interest
+predictor <- c("tanner_genital")
+## Name of covariates to adjust for
+clinical <- c("sex", "Batch", "InjectionOrder", "storage_blood_days")
+
+# 2. LSEA linear regression
+## Nothing special here, just a linear regression function
+## Makes lipids the outcome and records the t-statistic for association (will be the same as you get for a logistic regression)
+regression<- LSEA_lm(lipids_lsea, lipid_names, predictor, clinical)
+head(regression)
+
+# 3. Get the correlation between lipids, adjusting for covariates
+## This is quite important, the correlation matric needs to be done on the residualized lipid data
+lipids_lsea_cor <- LSEA_cor(lipids_lsea, lipid_names, clinical)
+lipids_lsea_cor[1:5,1:5]
+
+# 4. LSEA analysis
+## Use "sum" option in this case (sum of t-statistics)
+## The adjustment accounts for the correlation between lipids and shows a perfect 0.05 false positive rate
+## Tests if lipids within a set show 'no association' with the outcome
+res_sum <- LSEA(lipid_sets = final_list,
+               regression = regression,
+               dat_cor = lipids_lsea_cor,
+               analysis="sum")
+
+## View the top few results
+datatable(res_sum[order(res_sum$log10p,decreasing=TRUE),])
+
+lsea_baker_all <- rbind(lsea_baker_all, data.frame(Pheno = predictor, res_sum))
+
+```
+
+## BMI
+
+```{r}
+
+# 1. Settings
+## Name of variable of interest
+predictor <- c("bmiz")
+## Name of covariates to adjust for
+clinical <- c("age", "age2", "sex", "Batch", "InjectionOrder", "storage_blood_days")
+
+# 2. LSEA linear regression
+## Nothing special here, just a linear regression function
+## Makes lipids the outcome and records the t-statistic for association (will be the same as you get for a logistic regression)
+regression<- LSEA_lm(lipids_lsea, lipid_names, predictor, clinical)
+head(regression)
+
+# 3. Get the correlation between lipids, adjusting for covariates
+## This is quite important, the correlation matric needs to be done on the residualized lipid data
+lipids_lsea_cor <- LSEA_cor(lipids_lsea, lipid_names, clinical)
+lipids_lsea_cor[1:5,1:5]
+
+# 4. LSEA analysis
+## Use "sum" option in this case (sum of t-statistics)
+## The adjustment accounts for the correlation between lipids and shows a perfect 0.05 false positive rate
+## Tests if lipids within a set show 'no association' with the outcome
+res_sum <- LSEA(lipid_sets = final_list,
+               regression = regression,
+               dat_cor = lipids_lsea_cor,
+               analysis="sum")
+
+## View the top few results
+datatable(res_sum[order(res_sum$log10p,decreasing=TRUE),])
+
+lsea_baker_all <- rbind(lsea_baker_all, data.frame(Pheno = predictor, res_sum))
+
+```
+## Sex
+
+```{r}
+
+# 1. Settings
+## Name of variable of interest
+predictor <- c("sex")
+## Name of covariates to adjust for
+clinical <- c("age", "age2", "Batch", "InjectionOrder", "storage_blood_days")
+
+# 2. LSEA linear regression
+## Nothing special here, just a linear regression function
+## Makes lipids the outcome and records the t-statistic for association (will be the same as you get for a logistic regression)
+regression<- LSEA_lm(lipids_lsea, lipid_names, predictor, clinical)
+head(regression)
+
+# 3. Get the correlation between lipids, adjusting for covariates
+## This is quite important, the correlation matric needs to be done on the residualized lipid data
+lipids_lsea_cor <- LSEA_cor(lipids_lsea, lipid_names, clinical)
+lipids_lsea_cor[1:5,1:5]
+
+# 4. LSEA analysis
+## Use "sum" option in this case (sum of t-statistics)
+## The adjustment accounts for the correlation between lipids and shows a perfect 0.05 false positive rate
+## Tests if lipids within a set show 'no association' with the outcome
+res_sum <- LSEA(lipid_sets = final_list,
+               regression = regression,
+               dat_cor = lipids_lsea_cor,
+               analysis="sum")
+
+## View the top few results
+datatable(res_sum[order(res_sum$log10p,decreasing=TRUE),])
+
+lsea_baker_all <- rbind(lsea_baker_all, data.frame(Pheno = predictor, res_sum))
+
+```
+
+## IQ/DQ
+
+```{r}
+
+# 1. Settings
+## Name of variable of interest
+predictor <- c("iq_dq_wisccomp_mselnv_nih")
+## Name of covariates to adjust for
+clinical <- c("age", "age2", "sex", "Batch", "InjectionOrder", "storage_blood_days")
+
+# 2. LSEA linear regression
+## Nothing special here, just a linear regression function
+## Makes lipids the outcome and records the t-statistic for association (will be the same as you get for a logistic regression)
+regression<- LSEA_lm(lipids_lsea, lipid_names, predictor, clinical)
+head(regression)
+
+# 3. Get the correlation between lipids, adjusting for covariates
+## This is quite important, the correlation matric needs to be done on the residualized lipid data
+lipids_lsea_cor <- LSEA_cor(lipids_lsea, lipid_names, clinical)
+lipids_lsea_cor[1:5,1:5]
+
+# 4. LSEA analysis
+## Use "sum" option in this case (sum of t-statistics)
+## The adjustment accounts for the correlation between lipids and shows a perfect 0.05 false positive rate
+## Tests if lipids within a set show 'no association' with the outcome
+res_sum <- LSEA(lipid_sets = final_list,
+               regression = regression,
+               dat_cor = lipids_lsea_cor,
+               analysis="sum")
+
+## View the top few results
+datatable(res_sum[order(res_sum$log10p,decreasing=TRUE),])
+
+lsea_baker_all <- rbind(lsea_baker_all, data.frame(Pheno = predictor, res_sum))
+
+```
+
+## CSHQ
+
+```{r}
+
+# 1. Settings
+## Name of variable of interest
+predictor <- c("sleep_cshq_total")
+## Name of covariates to adjust for
+clinical <- c("age", "age2", "sex", "Batch", "InjectionOrder", "storage_blood_days")
+
+# 2. LSEA linear regression
+## Nothing special here, just a linear regression function
+## Makes lipids the outcome and records the t-statistic for association (will be the same as you get for a logistic regression)
+regression<- LSEA_lm(lipids_lsea, lipid_names, predictor, clinical)
+head(regression)
+
+# 3. Get the correlation between lipids, adjusting for covariates
+## This is quite important, the correlation matric needs to be done on the residualized lipid data
+lipids_lsea_cor <- LSEA_cor(lipids_lsea, lipid_names, clinical)
+lipids_lsea_cor[1:5,1:5]
+
+# 4. LSEA analysis
+## Use "sum" option in this case (sum of t-statistics)
+## The adjustment accounts for the correlation between lipids and shows a perfect 0.05 false positive rate
+## Tests if lipids within a set show 'no association' with the outcome
+res_sum <- LSEA(lipid_sets = final_list,
+               regression = regression,
+               dat_cor = lipids_lsea_cor,
+               analysis="sum")
+
+## View the top few results
+datatable(res_sum[order(res_sum$log10p,decreasing=TRUE),])
+
+lsea_baker_all <- rbind(lsea_baker_all, data.frame(Pheno = predictor, res_sum))
+
+```
+
+## Write output
+
+```{r}
+
+lsea_baker_all$Set <- unlist(lapply(strsplit(as.character(lsea_baker_all$pathway), " - "), function(x) x[1]))
+lsea_baker_all$Pathway <- unlist(lapply(strsplit(as.character(lsea_baker_all$pathway), " - "), function(x) x[2]))
+
+fwrite(lsea_baker_all, "~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lsea_baker_all.txt", col.names = T, row.names = F, quote = F, sep = "\t")
+
+lsea_baker_all.tmp <- lsea_baker_all[-grep("\\|", lsea_baker_all$pathway),]
+lsea_baker_all.tmp2 <- lsea_baker_all[grep("\\|", lsea_baker_all$pathway),]
+lsea_baker_all.tmp2$pathway <- unlist(lapply(strsplit(as.character(lsea_baker_all.tmp2$pathway), " \\| "), function(x) x[2]))
+lsea_baker_all2 <- rbind(lsea_baker_all.tmp, lsea_baker_all.tmp2)
+
+# Munge into old format out of fgsea
+lsea_baker_all2$Set <- unlist(lapply(strsplit(as.character(lsea_baker_all2$pathway), " - "), function(x) x[1]))
+lsea_baker_all2$Pathway <- unlist(lapply(strsplit(as.character(lsea_baker_all2$pathway), " - "), function(x) x[2]))
+lsea_baker_all2$pval <- lsea_baker_all2$p
+
+```
+
+# Lipid-set enrichment analysis
+
+- **N.B. doesn't account for covariates**
+- use fgseaLabel implementation to account for correlation between lipids
+- https://rdrr.io/github/ctlab/fgsea/src/R/fgsea.R#sym-fgseaLabel
+
+```{r}
+
+lsea_all <- NULL
+
+```
+
+## ASD
+
+- Remove the storage outliers for ASD analysis only
+
+```{r}
+
+phenon <- "ASD"
+labels_fgsea <- pheno %>% dplyr::select(IID, ASD) %>% arrange(IID) %>% filter(!IID %in% outliers_storage[,1])
+lipids_int_fgsea <- lipids %>% filter(IID %in% labels_fgsea$IID) %>% arrange(IID) %>% filter(!IID %in% outliers_storage[,1])
+lipids_int_fgsea.ma <- as.matrix(lipids_int_fgsea[,3:ncol(lipids_int_fgsea)])
+rownames(lipids_int_fgsea.ma) <- lipids_int_fgsea$IID
+identical(as.character(labels_fgsea$IID), rownames(lipids_int_fgsea.ma))
+
+lsea <- fgseaLabel(lsea_anno_header.ls, t(lipids_int_fgsea.ma), labels_fgsea[,phenon], 10000,
+                      minSize=1, maxSize=Inf,
+                      nproc=0,
+                      gseaParam=1,
+                      BPPARAM=NULL)
+
+datatable(lsea %>% arrange(pval))
+
+lsea_all <- rbind(lsea_all, data.frame(Pheno = phenon, lsea))
+
+```
+
+## Age
+
+```{r}
+
+phenon <- "age"
+labels_fgsea <- pheno %>% dplyr::select(IID, all_of(phenon)) %>% arrange(IID)
+lipids_int_fgsea <- lipids %>% filter(IID %in% labels_fgsea$IID) %>% arrange(IID)
+lipids_int_fgsea.ma <- as.matrix(lipids_int_fgsea[,3:ncol(lipids_int_fgsea)])
+rownames(lipids_int_fgsea.ma) <- lipids_int_fgsea$IID
+identical(as.character(labels_fgsea$IID), rownames(lipids_int_fgsea.ma))
+
+lsea <- fgseaLabel(lsea_anno_header.ls, t(lipids_int_fgsea.ma), labels_fgsea[,phenon], 10000,
+                      minSize=1, maxSize=Inf,
+                      nproc=0,
+                      gseaParam=1,
+                      BPPARAM=NULL)
+
+datatable(lsea %>% arrange(pval))
+
+lsea_all <- rbind(lsea_all, data.frame(Pheno = phenon, lsea))
+
+```
+
+## Tanner
+
+```{r}
+
+phenon <- "tanner_genital"
+labels_fgsea <- pheno %>% dplyr::select(IID, all_of(phenon)) %>% arrange(IID) %>% filter(!is.na(tanner_genital))
+lipids_int_fgsea <- lipids %>% filter(IID %in% labels_fgsea$IID) %>% arrange(IID)
+lipids_int_fgsea.ma <- as.matrix(lipids_int_fgsea[,3:ncol(lipids_int_fgsea)])
+rownames(lipids_int_fgsea.ma) <- lipids_int_fgsea$IID
+identical(as.character(labels_fgsea$IID), rownames(lipids_int_fgsea.ma))
+
+lsea <- fgseaLabel(lsea_anno_header.ls, t(lipids_int_fgsea.ma), labels_fgsea[,phenon], 10000,
+                      minSize=1, maxSize=Inf,
+                      nproc=0,
+                      gseaParam=1,
+                      BPPARAM=NULL)
+
+datatable(lsea %>% arrange(pval))
+
+lsea_all <- rbind(lsea_all, data.frame(Pheno = phenon, lsea))
+
+```
+
+## BMI
+
+```{r}
+
+phenon <- "bmiz"
+labels_fgsea <- pheno %>% dplyr::select(IID, all_of(phenon)) %>% arrange(IID) %>% filter(!is.na(bmiz))
+lipids_int_fgsea <- lipids %>% filter(IID %in% labels_fgsea$IID) %>% arrange(IID)
+lipids_int_fgsea.ma <- as.matrix(lipids_int_fgsea[,3:ncol(lipids_int_fgsea)])
+rownames(lipids_int_fgsea.ma) <- lipids_int_fgsea$IID
+identical(as.character(labels_fgsea$IID), rownames(lipids_int_fgsea.ma))
+
+lsea <- fgseaLabel(lsea_anno_header.ls, t(lipids_int_fgsea.ma), labels_fgsea[,phenon], 10000,
+                      minSize=1, maxSize=Inf,
+                      nproc=0,
+                      gseaParam=1,
+                      BPPARAM=NULL)
+
+datatable(lsea %>% arrange(pval))
+
+lsea_all <- rbind(lsea_all, data.frame(Pheno = phenon, lsea))
+
+```
+
+## Sex
+
+```{r}
+
+phenon <- "sex"
+labels_fgsea <- pheno %>% dplyr::select(IID, all_of(phenon)) %>% arrange(IID) %>% filter(!is.na(sex)) %>% mutate(sex = as.numeric(sex))
+lipids_int_fgsea <- lipids %>% filter(IID %in% labels_fgsea$IID) %>% arrange(IID)
+lipids_int_fgsea.ma <- as.matrix(lipids_int_fgsea[,3:ncol(lipids_int_fgsea)])
+rownames(lipids_int_fgsea.ma) <- lipids_int_fgsea$IID
+identical(as.character(labels_fgsea$IID), rownames(lipids_int_fgsea.ma))
+
+lsea <- fgseaLabel(lsea_anno_header.ls, t(lipids_int_fgsea.ma), labels_fgsea[,phenon], 10000,
+                      minSize=1, maxSize=Inf,
+                      nproc=0,
+                      gseaParam=1,
+                      BPPARAM=NULL)
+
+datatable(lsea %>% arrange(pval))
+
+lsea_all <- rbind(lsea_all, data.frame(Pheno = phenon, lsea))
+
+```
+
+## IQ_DQ
+
+```{r}
+
+phenon <- "iq_dq_wisccomp_mselnv_nih"
+labels_fgsea <- pheno %>% dplyr::select(IID, all_of(phenon)) %>% arrange(IID) %>% filter(!is.na(iq_dq_wisccomp_mselnv_nih))
+lipids_int_fgsea <- lipids %>% filter(IID %in% labels_fgsea$IID) %>% arrange(IID)
+lipids_int_fgsea.ma <- as.matrix(lipids_int_fgsea[,3:ncol(lipids_int_fgsea)])
+rownames(lipids_int_fgsea.ma) <- lipids_int_fgsea$IID
+identical(as.character(labels_fgsea$IID), rownames(lipids_int_fgsea.ma))
+
+lsea <- fgseaLabel(lsea_anno_header.ls, t(lipids_int_fgsea.ma), labels_fgsea[,phenon], 10000,
+                      minSize=1, maxSize=Inf,
+                      nproc=0,
+                      gseaParam=1,
+                      BPPARAM=NULL)
+
+datatable(lsea %>% arrange(pval))
+
+lsea_all <- rbind(lsea_all, data.frame(Pheno = phenon, lsea))
+
+```
+
+## CSHQ
+
+```{r}
+
+phenon <- "sleep_cshq_total"
+labels_fgsea <- pheno %>% dplyr::select(IID, all_of(phenon)) %>% arrange(IID) %>% filter(!is.na(sleep_cshq_total))
+lipids_int_fgsea <- lipids %>% filter(IID %in% labels_fgsea$IID) %>% arrange(IID)
+lipids_int_fgsea.ma <- as.matrix(lipids_int_fgsea[,3:ncol(lipids_int_fgsea)])
+rownames(lipids_int_fgsea.ma) <- lipids_int_fgsea$IID
+identical(as.character(labels_fgsea$IID), rownames(lipids_int_fgsea.ma))
+
+lsea <- fgseaLabel(lsea_anno_header.ls, t(lipids_int_fgsea.ma), labels_fgsea[,phenon], 10000,
+                      minSize=1, maxSize=Inf,
+                      nproc=0,
+                      gseaParam=1,
+                      BPPARAM=NULL)
+
+datatable(lsea %>% arrange(pval))
+
+lsea_all <- rbind(lsea_all, data.frame(Pheno = phenon, lsea))
+
+```
+
+## Write output
+
+```{r}
+
+lsea_all$Set <- unlist(lapply(strsplit(lsea_all$pathway, " - "), function(x) x[1]))
+lsea_all$Pathway <- unlist(lapply(strsplit(lsea_all$pathway, " - "), function(x) x[2]))
+
+fwrite(lsea_all, "~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lsea_all.txt", col.names = T, row.names = F, quote = F, sep = "\t")
+
+```
+
+# Annotation of LWAS hits
+
+```{r}
+
+adjclinical = TRUE
+adjclinical = FALSE
+
+if (adjclinical == FALSE) {
+  sig_all <- read.delim("/Users/uqcyap3/Documents/Research/ASD/Output/5_metabolomics/analysis/osca/assoc/osca_assoc_sig_aggregated.txt", header = T, as.is = T)
+} else if (adjclinical == TRUE) {
+  sig_all <- read.delim("/Users/uqcyap3/Documents/Research/ASD/Output/5_metabolomics/analysis/osca/assoc/osca_assoc_adjclinical_sig_aggregated.txt", header = T, as.is = T)
+}
+
+# Filter for species as classes don't have annotations
+sig_all_species <- sig_all %>% filter(Data == "lipids")
+
+lwas_anno.count_out <- list()
+
+pheno.tmp <- unique(sig_all$Pheno)
+for (i in 1:length(pheno.tmp)) {
+  phenon <- pheno.tmp[i]
+  
+  print(phenon)
+  
+  sig_all_species.tmp <- sig_all_species %>% filter(Pheno == phenon)
+  hits_anno.tmp <- unlist(lapply(lsea_anno_header.ls, function(x) length(which(x %in% sig_all_species.tmp$Probe))))
+  lsea_anno.count <- data.frame(Pheno = phenon, pathway = names(hits_anno.tmp), count = hits_anno.tmp, count_divanno = hits_anno.tmp/lsea_total, count_divtotal = hits_anno.tmp/sum(hits_anno.tmp), count_divanno_timestotal = hits_anno.tmp/lsea_total*sum(hits_anno.tmp)) %>% filter(count_divanno > 0)
+  rownames(lsea_anno.count) <- NULL
+  datatable(lsea_anno.count)
+  
+  lwas_anno.count_out[[paste(phenon, sep = "")]] <- lsea_anno.count
+  
+}
+
+lwas_anno.count_out_featureset <- lapply(lwas_anno.count_out, function(x) as.character(x$pathway))
+
+# Prep for lipid x pathway plot
+# lipid by pathway plot
+foo <- lapply(lsea_anno_header.ls, function(x) x[which(x %in% sig_all_species$Probe)])
+rm_list <- unlist(lapply(foo, length))
+goo <- foo[-which(rm_list == 0)]
+lwas_anno_pathway <- do.call(rbind, lapply(1:length(goo), function(i) data.frame(pathway = names(goo)[i], lipid = goo[[i]])))
+
+lwas_anno_pathway_sig_all_species.long <- sig_all_species %>% 
+  mutate(b = ifelse(Pheno %in% c("ASD", "sex"), log(b), b)) %>%
+  mutate(lipid = Probe) %>% 
+  mutate(log10p_sign = (-log10(p))*sign(b)) %>%
+  dplyr::select(c("Pheno", "lipid", "log10p_sign")) %>% 
+  mutate(value = 1) %>% 
+  full_join(., lwas_anno_pathway) %>%
+  mutate(pathway = as.character(pathway)) %>%
+  mutate(Set = unlist(lapply(strsplit(pathway, " - "), function(x) x[1]))) %>%
+  mutate(Pathway = unlist(lapply(strsplit(pathway, " - "), function(x) x[2])) %>% trimws()) %>%
+  mutate(Lipid.species_header = lipid) %>%
+  left_join(., anno, by = "Lipid.species_header") %>%
+  mutate(MatchSet = match(Set, c("Domain", "Class", "Subclass", "Feature")))
+
+# Prep for LWAS count plot
+lwas_anno.count_out.df <- do.call(rbind, lwas_anno.count_out)
+lwas_anno.count_out.df$Pheno <- as.character(lwas_anno.count_out.df$Pheno)
+lwas_anno.count_out.df$pathway <- as.character(lwas_anno.count_out.df$pathway)
+lwas_anno.count_out.df$Set <- unlist(lapply(strsplit(lwas_anno.count_out.df$pathway, " - "), function(x) x[1]))
+lwas_anno.count_out.df$Pathway <- unlist(lapply(strsplit(lwas_anno.count_out.df$pathway, " - "), function(x) x[2]))
+
+lwas_anno.count_out.df <- lwas_anno.count_out.df %>% arrange(count) %>% 
+  mutate(Pheno = case_when(Pheno == "ASD" ~ "ASD",
+                        Pheno == "age" ~ "age",
+                        Pheno == "tanner_genital" ~ "Tanner (genital)",
+                        Pheno == "BMI (z-score)" ~ "BMI (z-score)",
+                        Pheno == "sex" ~ "sex",
+                        Pheno == "IQ_DQ" ~ "IQ/DQ",
+                        Pheno == "sleep_problems" ~ "Sleep (CSHQ)"))
+lwas_anno.count_out.df$MatchPheno <- match(lwas_anno.count_out.df$Pheno, c("ASD", "IQ/DQ", "Sleep (CSHQ)", "age", "Tanner (genital)", "BMI (z-score)", "sex"))
+lwas_anno.count_out.df$MatchPathway <- match(lwas_anno.count_out.df$Pathway, sort(lwas_anno.count_out.df$Pathway, decreasing = T))
+lwas_anno.count_out.df$MatchSet <-match(lwas_anno.count_out.df$Set, c("Domain", "Class", "Subclass", "Feature"))
+lwas_anno.count_out.df <- lwas_anno.count_out.df %>% mutate(uniqid = paste(Pheno, Pathway, sep = "_"))
+
+lsea_method <- "baker"
+if (lsea_method == "baker") {
+  lsea_all <- lsea_baker_all2 %>% filter(BH <= 0.05)
+}
+
+# Take nominally significant
+lsea_all_05 <- lsea_all %>% filter(pval <= 0.05) %>% arrange(pval) %>% 
+  mutate(Pheno = case_when(Pheno == "ASD" ~ "ASD",
+                        Pheno == "age" ~ "age",
+                        Pheno == "tanner_genital" ~ "Tanner (genital)",
+                        Pheno == "bmiz" ~ "BMI (z-score)",
+                        Pheno == "sex" ~ "sex",
+                        Pheno == "iq_dq_wisccomp_mselnv_nih" ~ "IQ/DQ",
+                        Pheno == "sleep_cshq_total" ~ "Sleep (CSHQ)"))
+lsea_all_05$MatchPheno <- match(lsea_all_05$Pheno, c("ASD", "IQ/DQ", "Sleep (CSHQ)", "age", "Tanner (genital)", "BMI (z-score)", "sex"))
+lsea_all_05$uniqid <- paste(lsea_all_05$Pheno, lsea_all_05$Pathway, sep = "_")
+lsea_all_05$MatchPathway <- match(lsea_all_05$Pathway, sort(lsea_all_05$Pathway, decreasing = T))
+lsea_all_05$LWASmatch <- ifelse(lsea_all_05$uniqid %in% lwas_anno.count_out.df$uniqid, "*", NA)
+lsea_all_05$MatchSet <- match(lsea_all_05$Set, c("Domain", "Class", "Subclass", "Feature"))
+
+# Add asterisk to denote also in LSEA set
+# - find pathways that match the pheno/pathway combination
+all_pathway <- lsea_all_05 %>% dplyr::select(c("Pheno", "Set", "Pathway")) %>% mutate(uniqid = paste(Pheno, Pathway, sep = "_"))
+neurodev_pathway <- lsea_all_05 %>% filter(Pheno %in% c("ASD", "IQ/DQ", "Sleep (CSHQ)")) %>% dplyr::select(c("Pheno", "Set", "Pathway")) %>% mutate(uniqid = paste(Pheno, Pathway, sep = "_"))
+
+lwas_anno.count_out.df$LSEAmatch <- ifelse(lwas_anno.count_out.df$uniqid %in% all_pathway$uniqid, "*", NA)
+lwas_anno.count_out_neurodev.df <- lwas_anno.count_out.df %>% filter(Pheno %in% c("ASD", "IQ/DQ", "Sleep (CSHQ)")) %>% mutate(uniqid = paste(Pheno, Pathway, sep = "_"))
+lwas_anno.count_out_neurodev.df$LSEAmatch <- ifelse(lwas_anno.count_out_neurodev.df$uniqid %in% neurodev_pathway$uniqid, "*", NA)
+
+```
+
+# Plot
+
+## LSEA plot
+
+```{r}
+
+lsea_all_05 %>% mutate(Pathway = fct_reorder(Pathway, MatchPathway)) %>%
+  mutate(Pheno = fct_reorder(Pheno, MatchPheno)) %>%
+  mutate(Set = fct_reorder(Set, MatchSet)) %>%
+  ggplot(aes(x = Pathway, y = -log10(pval)*sign(Stat), fill = Pheno, label = LWASmatch)) +
+#  ggplot(aes(x = Pathway, y = -log10(pval)*sign(ES), fill = Pheno, label = LWASmatch)) +
+  geom_bar(stat="identity") +
+  geom_hline(yintercept = 0) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dotted", colour = "gray40") +
+  geom_hline(yintercept = log10(0.05), linetype = "dotted", colour = "gray40") +
+  facet_grid(Pheno ~ Set, scales = "free_y", space = "free_y") +
+  scale_fill_manual(values=rep(brewer.pal(7,"Dark2"))) +
+  geom_text(size = 10, nudge_x = -0.1, nudge_y = 0.03) +
+  theme_bw() + theme(legend.position = "none", axis.text.y = element_text(size = 10)) +
+  coord_flip()
+
+if (adjclinical == FALSE) {
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lsea_sig_bypheno.svg", height = 7, width = 9)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lsea_sig_bypheno.png", height = 7, width = 9)
+} else if (adjclinical == TRUE) {
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lsea_adjclinical_sig_bypheno.svg", height = 7, width = 9)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lsea_adjclinical_sig_bypheno.png", height = 7, width = 9)
+}
+
+lsea_all_05 %>% mutate(Pathway = fct_reorder(Pathway, MatchPathway)) %>%
+  mutate(Pheno = fct_reorder(Pheno, MatchPheno)) %>%
+  mutate(Set = fct_reorder(Set, MatchSet)) %>%
+  ggplot(aes(x = Pathway, y = -log10(pval)*sign(Stat), fill = Pheno, label = LWASmatch)) +
+  #ggplot(aes(x = Pathway, y = -log10(pval)*sign(ES), fill = Pheno, label = LWASmatch)) +
+  geom_bar(stat="identity") +
+  geom_hline(yintercept = 0, width = 2) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dotted", colour = "gray40") +
+  geom_hline(yintercept = log10(0.05), linetype = "dotted", colour = "gray40") +
+  facet_grid(Set ~ Pheno, scales = "free_y", space = "free_y") +
+  scale_fill_manual(values=rep(brewer.pal(7,"Dark2"))) +
+  geom_text(size = 6, nudge_x = -0.3, nudge_y = 0.05) +
+  theme_bw() + theme(legend.position = "none", axis.text.y = element_text(size = 8)) +
+  coord_flip()
+
+if (adjclinical == FALSE) {
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lsea_sig_bypathway.svg", height = 4, width = 8)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lsea_sig_bypathway.png", height = 4, width = 8)
+} else if (adjclinical == TRUE) {
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lsea_adjclinical_sig_bypathway.svg", height = 9, width = 10)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lsea_adjclinical_sig_bypathway.png", height = 9, width = 10)
+}
+
+lsea_all_05[!duplicated(lsea_all_05[,c("Pheno", "pathway")]),] %>% 
+  mutate(Pathway = fct_reorder(Pathway, MatchPathway)) %>%
+  filter(Pheno %in% c("ASD", "IQ/DQ", "Sleep (CSHQ)")) %>%
+  mutate(Pheno = fct_reorder(Pheno, MatchPheno)) %>%
+  mutate(Set = fct_reorder(Set, MatchSet)) %>%
+  ggplot(aes(x = Pathway, y = log10p*sign(Stat), fill = Pheno, label = LWASmatch)) +
+  geom_bar(stat="identity") +
+  geom_hline(yintercept = 0, width = 2) +
+  facet_grid(Set ~ Pheno, scales = "free_y", space = "free_y") +
+  scale_fill_manual(values=rep(brewer.pal(7,"Dark2"))) +
+  geom_text(size = 6, nudge_x = -0.3, nudge_y = 0.05) +
+#  theme_bw() + theme(legend.position = "none", axis.text.y = element_text(size = 8)) +
+  theme_bw() + theme(legend.position = "right") +
+  coord_flip()
+
+if (adjclinical == FALSE) {
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lsea_sig_bypathway_neurodev.svg", height = 6, width = 9)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lsea_sig_bypathway_neurodev.png", height = 6, width = 9)
+} else if (adjclinical == TRUE) {
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lsea_adjclinical_sig_bypathway_neurodev.svg", height = 9, width = 10)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lsea_adjclinical_sig_bypathway_neurodev.png", height = 9, width = 10)
+}
+
+lsea_all_05[!duplicated(lsea_all_05[,c("Pheno", "pathway")]),] %>% 
+  mutate(Pathway = fct_reorder(Pathway, MatchPathway)) %>%
+  filter(Pheno %in% c("age", "Tanner (genital)", "BMI (z-score)", "sex")) %>%
+  mutate(Pheno = fct_reorder(Pheno, MatchPheno)) %>%
+  mutate(Set = fct_reorder(Set, MatchSet)) %>%
+  ggplot(aes(x = Pathway, y = log10p*sign(Stat), fill = Pheno, label = LWASmatch)) +
+  geom_bar(stat="identity") +
+  geom_hline(yintercept = 0, width = 2) +
+  facet_grid(Set ~ Pheno, scales = "free_y", space = "free_y") +
+  scale_fill_manual(values=rep(brewer.pal(7,"Dark2")[4:7])) +
+  geom_text(size = 6, nudge_x = -0.3, nudge_y = 0.05) +
+#  theme_bw() + theme(legend.position = "none", axis.text.y = element_text(size = 8)) +
+  theme_bw() + theme(legend.position = "right") +
+  coord_flip()
+
+if (adjclinical == FALSE) {
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lsea_sig_bypathway_agetannerbmiz.svg", height = 9, width = 9)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lsea_sig_bypathway_agetannerbmiz.png", height = 9, width = 9)
+} else if (adjclinical == TRUE) {
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lsea_adjclinical_sig_bypathway_agetannerbmiz.svg", height = 9, width = 10)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lsea_adjclinical_sig_bypathway_agetannerbmiz.png", height = 9, width = 10)
+}
+  #scale_fill_manual(values = wes_palette(5, name = "Zissou1", type = "continuous"), name = "") +
+```
+
+## LWAS hit by pathway plot
+
+```{r}
+
+ncol <- length(lwas_anno_pathway_sig_all_species.long %>% filter(!Pheno %in% c("age", "tanner_genital")) %>% pull(Lipid.class) %>% unique())
+myPalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
+
+# Neurodevelopmental
+lwas_anno_pathway_sig_all_species.long %>% 
+  mutate(Set = fct_reorder(Set, MatchSet)) %>%
+  mutate(Pathway = fct_rev(Pathway)) %>%
+  group_by(Pheno) %>%
+  filter(!Pheno %in% c("age", "tanner_genital", "BMI (z-score)", "sex")) %>%
+  mutate(Pheno = case_when(Pheno == "ASD" ~ "ASD",
+                        Pheno == "age" ~ "age",
+                        Pheno == "tanner_genital" ~ "Tanner (genital)",
+                        Pheno == "BMI (z-score)" ~ "BMI (z-score)",
+                        Pheno == "sex" ~ "sex",
+                        Pheno == "IQ_DQ" ~ "IQ/DQ",
+                        Pheno == "sleep_problems" ~ "Sleep (CSHQ)")) %>%
+  ggplot(., aes(x = Lipid.species, y = Pathway)) +
+  geom_tile(aes(fill = log10p_sign), colour = "white") +
+  scale_fill_gradientn(colours = myPalette(100), name = "-log10(p)*sign") +
+#  scale_fill_manual(values=rep(brewer.pal(11,"Dark2"))) +
+#  scale_fill_manual(values=wes_palette("Zissou1", ncol, type = "continuous")) +
+#  theme_bw() + theme(legend.position = "none", axis.text.x=element_text(angle=90, hjust=1)) +
+  theme_bw() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  facet_grid(Set ~ Pheno, scales = "free", space = "free") + 
+  xlab("Lipid species (LWAS hits)") + ylab("Pathway")
+
+if (adjclinical == FALSE) {
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lwas_hits_lipidxpathway_neurodev.png", height = 7, width = 9)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lwas_hits_lipidxpathway_neurodev.svg", height = 7, width = 9)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lwas_hits_lipidxpathway_neurodev_ppt.png", height = 8, width = 9)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lwas_hits_lipidxpathway_neurodev_ppt.svg", height = 8, width = 9)
+} else if (adjclinical == TRUE) {
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lwas_hits_adjclinical_lipidxpathway_neurodev.png", height = 9, width = 15)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lwas_hits_adjclinical_lipidxpathway_neurodev.svg", height = 9, width = 15)
+}
+
+# Other traits
+lwas_anno_pathway_sig_all_species.long %>% 
+  mutate(Set = fct_reorder(Set, MatchSet)) %>%
+  mutate(Pathway = fct_rev(Pathway)) %>%
+  group_by(Pheno) %>%
+  filter(Pheno %in% c("age", "tanner_genital", "BMI (z-score)", "sex")) %>%
+  mutate(Pheno = case_when(Pheno == "ASD" ~ "ASD",
+                        Pheno == "age" ~ "age",
+                        Pheno == "tanner_genital" ~ "Tanner",
+                        Pheno == "BMI (z-score)" ~ "BMI (z-score)",
+                        Pheno == "sex" ~ "sex",
+                        Pheno == "IQ_DQ" ~ "IQ/DQ",
+                        Pheno == "sleep_problems" ~ "Sleep (CSHQ)")) %>%
+  ggplot(., aes(x = Lipid.species, y = Pathway)) +
+  geom_tile(aes(fill = log10p_sign), colour = "white") +
+  scale_fill_viridis_c(name = "-log10(p)*sign") +
+#  scale_fill_manual(values=rep(brewer.pal(11,"Dark2"))) +
+#  scale_fill_manual(values=wes_palette("Zissou1", ncol, type = "continuous")) +
+#  theme_bw() + theme(legend.position = "none", axis.text.x=element_text(angle=90, hjust=1)) +
+  theme_bw() + theme(legend.position = "bottom", axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  facet_grid(Set ~ Pheno, scales = "free", space = "free") + 
+  xlab("Lipid species (LWAS hits)") + ylab("Pathway") +
+  scale_x_discrete(labels = NULL, breaks = NULL)
+
+if (adjclinical == FALSE) {
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lwas_hits_lipidxpathway_agetannerbmiz.png", height = 12, width = 10)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lwas_hits_lipidxpathway_agetannerbmiz.svg", height = 12, width = 10)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lwas_hits_lipidxpathway_agetannerbmiz_ppt.png", height = 8, width = 9)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lwas_hits_lipidxpathway_agetannerbmiz_ppt.svg", height = 8, width = 9)
+} else if (adjclinical == TRUE) {
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lwas_hits_adjclinical_lipidxpathway_agetannerbmiz.png", height = 9, width = 15)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lwas_hits_adjclinical_lipidxpathway_agetannerbmiz.svg", height = 9, width = 15)
+}
+```
+
+## LWAS count by pathway plot
+
+```{r}
+
+lwas_anno.count_out.df %>% mutate(Pathway = fct_reorder(Pathway, MatchPathway)) %>%
+  mutate(Pheno = fct_reorder(Pheno, MatchPheno)) %>%
+  mutate(Set = fct_reorder(Set, MatchSet)) %>%
+  ggplot(aes(x = Pathway, y = count, fill = Pheno, label = LSEAmatch)) + 
+  geom_bar(stat="identity") +
+  facet_grid(Set ~ Pheno, scales = "free_y", space = "free_y") +
+  scale_fill_manual(values=rep(brewer.pal(7,"Dark2"))) +
+  geom_text(size = 7, nudge_x = -0.4, nudge_y = 2) +
+  theme_bw() + theme(legend.position = "none") +
+  coord_flip()
+
+if (adjclinical == FALSE) {
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lwas_sig_bypathway_allpheno.svg", height = 11, width = 9)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lwas_sig_bypathway_allpheno.png", height = 11, width = 9)
+} else if (adjclinical == TRUE) {
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lwas_sig_adjclinical_bypathway_allpheno.svg", height = 11, width = 9)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lwas_sig_adjclinical_bypathway_allpheno.png", height = 11, width = 9)
+}
+
+lwas_anno.count_out_neurodev.df %>% mutate(Pathway = fct_reorder(Pathway, MatchPathway)) %>%
+  mutate(Pheno = fct_reorder(Pheno, MatchPheno)) %>%
+  mutate(Set = fct_reorder(Set, MatchSet)) %>%
+  ggplot(aes(x = Pathway, y = count, fill = Pheno, label = LSEAmatch)) + 
+  geom_bar(stat="identity") +
+  facet_grid(Set ~ Pheno, scales = "free_y", space = "free_y") +
+  scale_fill_manual(values=rep(brewer.pal(7,"Dark2"))) +
+  geom_text(size = 7, nudge_x = -0.4, nudge_y = 2) +
+  theme_bw() + theme(legend.position = "none") +
+  coord_flip()
+
+lwas_anno.count_out_neurodev.df %>% mutate(Pathway = fct_reorder(Pathway, MatchPathway)) %>%
+  filter(Pheno %in% c("ASD", "IQ/DQ", "Sleep (CSHQ)")) %>%
+  mutate(Pheno = fct_reorder(Pheno, MatchPheno)) %>%
+  mutate(Set = fct_reorder(Set, MatchSet)) %>%
+  ggplot(aes(x = Pathway, y = count_divanno, fill = Pheno, label = LSEAmatch)) + 
+  geom_bar(stat="identity") +
+  facet_grid(Set ~ Pheno, scales = "free_y", space = "free_y") +
+  scale_fill_manual(values=rep(brewer.pal(7,"Dark2"))) +
+  geom_text(size = 5, nudge_x = -0.1, nudge_y = 0.03) +
+  theme_bw() + theme(legend.position = "none", axis.text.y = element_text(size = 15)) +
+  ylab("Count divided by set total") +
+  coord_flip()
+
+if (adjclinical == FALSE) {
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lwas_sig_bypathway_neurodev.svg", height = 9, width = 9)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lwas_sig_bypathway_neurodev.png", height = 9, width = 9)
+} else if (adjclinical == TRUE) {
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lwas_sig_adjclinical_bypathway_neurodev.svg", height = 9, width = 9)
+  ggsave("~/Documents/Research/ASD/Output/5_metabolomics/analysis/pathway/lwas_sig_adjclinical_bypathway_neurodev.png", height = 9, width = 9)
+}
+
+```
