@@ -1879,7 +1879,7 @@ colnames(tmp) <- c("MG_SampleID", mcpathn)
 pheno_mcpath <- inner_join(pheno, tmp, by = "MG_SampleID")
 
 # Add lipid PC data
-pheno_mcpath_lipid <- inner_join(pheno_mcpath, lipid_pc_asd_iqdq_sleep, by = "MG_SampleID")
+pheno_mcpath_lipid <- inner_join(pheno_mcpath, lipid_pc_asd_iqdq_sleep, by = "MG_SampleID") %>% mutate(meds_adhd_behavioural = ifelse(meds_adhd_behavioural != 1, 0, 1))
     
 # ANOVA model
 lwas_anova_iqdq <- tidy(aov(formula(paste("PC1_lwas_IQDQ ~ age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + iq_dq_wisccomp_mselnv_nih + meds_adhd_behavioural + PC1_diet_pe", paste(mcpathn, collapse = "+"), sep = "+")), data = pheno_mcpath_lipid)) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
@@ -1936,7 +1936,7 @@ colnames(tmp) <- c("MG_SampleID", mcpathn)
 pheno_mcpath <- inner_join(pheno, tmp, by = "MG_SampleID")
 
 # Add lipid PC data
-pheno_mcpath_lipid <- inner_join(pheno_mcpath, lipid_pc_asd_iqdq_sleep, by = "MG_SampleID")
+pheno_mcpath_lipid <- inner_join(pheno_mcpath, lipid_pc_asd_iqdq_sleep, by = "MG_SampleID") %>% mutate(meds_adhd_behavioural = ifelse(meds_adhd_behavioural != 1, 0, 1))
     
 # ANOVA model
 lwas_anova_sleep <- tidy(aov(formula(paste("PC1_lwas_sleep ~ age + age2 + sex + bmiz + Batch + InjectionOrder + storage_blood_days + sleep_cshq_total + meds_adhd_behavioural + cam_fishoil_dha + PC1_diet_pe + PC3_diet_pe", paste(mcpathn, collapse = "+"), sep = "+")), data = pheno_mcpath_lipid)) %>% mutate(sumsq_prop = sumsq/sum(sumsq)) %>% mutate(sumsq_cum = cumsum(sumsq_prop))
