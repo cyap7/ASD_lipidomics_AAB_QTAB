@@ -274,7 +274,7 @@ assoc_sig_results_pheno <- assoc_sig_results %>% filter(Probe %in% colnames(lipi
     mutate(Pheno = case_when(Pheno == "ASD" ~ "ASD",
                         Pheno == "age" ~ "age",
                         Pheno == "tanner_genital" ~ "Tanner (genital)",
-                        Pheno == "BMI" ~ "BMI",
+                        Pheno == "BMI (z-score)" ~ "BMI",
                         Pheno == "sex" ~ "sex",
                         Pheno == "IQ_DQ" ~ "IQ/DQ",
                         Pheno == "sleep_problems" ~ "Sleep (CSHQ)"))
@@ -384,7 +384,8 @@ for (i in 1:length(lipids_pgs_stats_sig$lipid)) {
 ```{r}
 
 # Add pheno for add_trait analysis
-lipids_pgs.long.assoc <- assoc_sig_results_pheno %>% inner_join(lipids_pgs.long, ., by = "lipid")
+lipids_pgs.long.assoc <- assoc_sig_results_pheno %>% filter(Pheno %in% c("age", "Tanner (genital)", "BMI", "sex")) %>% dplyr::select(c("lipid")) %>% distinct() %>% inner_join(lipids_pgs.long, ., by = "lipid")
+lipids_pgs.long.assoc_neurodev <- assoc_sig_results_pheno %>% filter(Pheno %in% c("ASD", "IQ/DQ", "Sleep (CSHQ)")) %>% inner_join(lipids_pgs.long, ., by = "lipid")
 
 ```
 
@@ -393,7 +394,7 @@ lipids_pgs.long.assoc <- assoc_sig_results_pheno %>% inner_join(lipids_pgs.long,
 ```{r}
 
 library(broom)
-tmp_all_asd_stats <- lipids_pgs.long.assoc %>% 
+tmp_demog_asd_stats <- lipids_pgs.long.assoc %>% 
   nest(data = -lipid) %>% 
   mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + ASD, data = .)), tidied = purrr::map(model, tidy)) %>%
   unnest(tidied) %>% 
@@ -408,7 +409,7 @@ if (datan == "lipid_species") {
 } else if (datan == "lipid_class") {
   tmp <- data.frame(lipid = anno_class$Lipid.species_header, lipid_name = anno_class$Lipid.species)
 }
-lipids_pgs_r2_agesex_asd <- inner_join(tmp_all_asd_stats, tmp, by = "lipid")
+lipids_pgs_r2_agesex_asd <- inner_join(tmp_demog_asd_stats, tmp, by = "lipid")
 
 datatable(lipids_pgs_r2_agesex_asd %>% arrange(desc(lipid_PGS_EUR)) %>% mutate_if(is.numeric, ~signif(., 3)))
 
@@ -416,7 +417,7 @@ datatable(lipids_pgs_r2_agesex_asd %>% arrange(desc(lipid_PGS_EUR)) %>% mutate_i
 
 ```{r}
 
-tmp_neurodev_asd_stats <- lipids_pgs.long.assoc %>% 
+tmp_neurodev_asd_stats <- lipids_pgs.long.assoc_neurodev %>% 
   filter(Pheno == "ASD") %>% 
   nest(data = -lipid) %>% 
   mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + ASD, data = .)), tidied = purrr::map(model, tidy)) %>%
@@ -428,7 +429,7 @@ tmp_neurodev_asd_stats <- lipids_pgs.long.assoc %>%
   mutate(Pheno = "ASD")
 colnames(tmp_neurodev_asd_stats)[which(colnames(tmp_neurodev_asd_stats) == "ASD")] <- "trait"
 
-tmp_neurodev_iqdq_stats <- lipids_pgs.long.assoc %>% 
+tmp_neurodev_iqdq_stats <- lipids_pgs.long.assoc_neurodev %>% 
   filter(Pheno == "IQ/DQ") %>% 
   nest(data = -lipid) %>% 
   mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + iq_dq_wisccomp_mselnv_nih, data = .)), tidied = purrr::map(model, tidy)) %>%
@@ -440,7 +441,7 @@ tmp_neurodev_iqdq_stats <- lipids_pgs.long.assoc %>%
   mutate(Pheno = "IQ/DQ")
 colnames(tmp_neurodev_iqdq_stats)[which(colnames(tmp_neurodev_iqdq_stats) == "iq_dq_wisccomp_mselnv_nih")] <- "trait"
 
-tmp_neurodev_sleep_stats <- lipids_pgs.long.assoc %>% 
+tmp_neurodev_sleep_stats <- lipids_pgs.long.assoc_neurodev %>% 
   filter(Pheno == "Sleep (CSHQ)") %>% 
   nest(data = -lipid) %>% 
   mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + sleep_cshq_total, data = .)), tidied = purrr::map(model, tidy)) %>%
@@ -469,7 +470,7 @@ lipids_pgs_r2_agesex_neurodev <- inner_join(lipids_pgs_r2_agesex_neurodev, tmp, 
 
 ```{r}
 
-tmp_all_asd_stats <- lipids_pgs.long.assoc %>% 
+tmp_demog_asd_stats <- lipids_pgs.long.assoc %>% 
   nest(data = -lipid) %>% 
   mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + ASD, data = .)), tidied = purrr::map(model, tidy)) %>%
   unnest(tidied) %>% 
@@ -484,7 +485,7 @@ if (datan == "lipid_species") {
 } else if (datan == "lipid_class") {
   tmp <- data.frame(lipid = anno_class$Lipid.species_header, lipid_name = anno_class$Lipid.species)
 }
-lipids_pgs_r2_agesex_batch_asd <- inner_join(tmp_all_asd_stats, tmp, by = "lipid")
+lipids_pgs_r2_agesex_batch_asd <- inner_join(tmp_demog_asd_stats, tmp, by = "lipid")
 
 datatable(lipids_pgs_r2_agesex_batch_asd %>% arrange(desc(lipid_PGS_EUR)) %>% mutate_if(is.numeric, ~signif(., 3)))
 
@@ -492,7 +493,7 @@ datatable(lipids_pgs_r2_agesex_batch_asd %>% arrange(desc(lipid_PGS_EUR)) %>% mu
 
 ```{r}
 
-tmp_neurodev_asd_stats <- lipids_pgs.long.assoc %>% 
+tmp_neurodev_asd_stats <- lipids_pgs.long.assoc_neurodev %>% 
   filter(Pheno == "ASD") %>% 
   nest(data = -lipid) %>% 
   mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + ASD, data = .)), tidied = purrr::map(model, tidy)) %>%
@@ -504,7 +505,7 @@ tmp_neurodev_asd_stats <- lipids_pgs.long.assoc %>%
   mutate(Pheno = "ASD")
 colnames(tmp_neurodev_asd_stats)[which(colnames(tmp_neurodev_asd_stats) == "ASD")] <- "trait"
 
-tmp_neurodev_iqdq_stats <- lipids_pgs.long.assoc %>% 
+tmp_neurodev_iqdq_stats <- lipids_pgs.long.assoc_neurodev %>% 
   filter(Pheno == "IQ/DQ") %>% 
   nest(data = -lipid) %>% 
   mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + iq_dq_wisccomp_mselnv_nih, data = .)), tidied = purrr::map(model, tidy)) %>%
@@ -516,7 +517,7 @@ tmp_neurodev_iqdq_stats <- lipids_pgs.long.assoc %>%
   mutate(Pheno = "IQ/DQ")
 colnames(tmp_neurodev_iqdq_stats)[which(colnames(tmp_neurodev_iqdq_stats) == "iq_dq_wisccomp_mselnv_nih")] <- "trait"
 
-tmp_neurodev_sleep_stats <- lipids_pgs.long.assoc %>% 
+tmp_neurodev_sleep_stats <- lipids_pgs.long.assoc_neurodev %>% 
   filter(Pheno == "Sleep (CSHQ)") %>% 
   nest(data = -lipid) %>% 
   mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + sleep_cshq_total, data = .)), tidied = purrr::map(model, tidy)) %>%
@@ -544,7 +545,7 @@ lipids_pgs_r2_agesex_batch_neurodev <- inner_join(lipids_pgs_r2_agesex_batch_neu
 
 ```{r}
 
-tmp_all_asd_stats <- lipids_pgs.long.assoc %>% 
+tmp_demog_asd_stats <- lipids_pgs.long.assoc %>% 
   nest(data = -lipid) %>% 
   mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + collection_blood_time_cos + ASD, data = .)), tidied = purrr::map(model, tidy)) %>%
   unnest(tidied) %>% 
@@ -559,7 +560,7 @@ if (datan == "lipid_species") {
 } else if (datan == "lipid_class") {
   tmp <- data.frame(lipid = anno_class$Lipid.species_header, lipid_name = anno_class$Lipid.species)
 }
-lipids_pgs_r2_agesex_batchtime_asd <- inner_join(tmp_all_asd_stats, tmp, by = "lipid")
+lipids_pgs_r2_agesex_batchtime_asd <- inner_join(tmp_demog_asd_stats, tmp, by = "lipid")
 
 datatable(lipids_pgs_r2_agesex_batchtime_asd %>% arrange(desc(lipid_PGS_EUR)) %>% mutate_if(is.numeric, ~signif(., 3)))
 
@@ -567,7 +568,7 @@ datatable(lipids_pgs_r2_agesex_batchtime_asd %>% arrange(desc(lipid_PGS_EUR)) %>
 
 ```{r}
 
-tmp_neurodev_asd_stats <- lipids_pgs.long.assoc %>% 
+tmp_neurodev_asd_stats <- lipids_pgs.long.assoc_neurodev %>% 
   filter(Pheno == "ASD") %>% 
   nest(data = -lipid) %>% 
   mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + collection_blood_time_cos + ASD, data = .)), tidied = purrr::map(model, tidy)) %>%
@@ -579,7 +580,7 @@ tmp_neurodev_asd_stats <- lipids_pgs.long.assoc %>%
   mutate(Pheno = "ASD")
 colnames(tmp_neurodev_asd_stats)[which(colnames(tmp_neurodev_asd_stats) == "ASD")] <- "trait"
 
-tmp_neurodev_iqdq_stats <- lipids_pgs.long.assoc %>% 
+tmp_neurodev_iqdq_stats <- lipids_pgs.long.assoc_neurodev %>% 
   filter(Pheno == "IQ/DQ") %>% 
   nest(data = -lipid) %>% 
   mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + collection_blood_time_cos + iq_dq_wisccomp_mselnv_nih, data = .)), tidied = purrr::map(model, tidy)) %>%
@@ -591,7 +592,7 @@ tmp_neurodev_iqdq_stats <- lipids_pgs.long.assoc %>%
   mutate(Pheno = "IQ/DQ")
 colnames(tmp_neurodev_iqdq_stats)[which(colnames(tmp_neurodev_iqdq_stats) == "iq_dq_wisccomp_mselnv_nih")] <- "trait"
 
-tmp_neurodev_sleep_stats <- lipids_pgs.long.assoc %>% 
+tmp_neurodev_sleep_stats <- lipids_pgs.long.assoc_neurodev %>% 
   filter(Pheno == "Sleep (CSHQ)") %>% 
   nest(data = -lipid) %>% 
   mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + collection_blood_time_cos + sleep_cshq_total, data = .)), tidied = purrr::map(model, tidy)) %>%
@@ -619,7 +620,7 @@ lipids_pgs_r2_agesex_batchtime_neurodev <- inner_join(lipids_pgs_r2_agesex_batch
 
 ```{r}
 
-tmp_all_asd_stats <- lipids_pgs.long.assoc %>% 
+tmp_demog_asd_stats <- lipids_pgs.long.assoc %>% 
   nest(data = -lipid) %>% 
   mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + PC1_diet_pe + PC2_diet_pe + PC3_diet_pe + ASD, data = .)), tidied = purrr::map(model, tidy)) %>%
 #  mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + protein + cholesterol + satfats + polyfats + monofats + carbohydrate + ASD, data = .)), tidied = purrr::map(model, tidy)) %>%
@@ -635,7 +636,7 @@ if (datan == "lipid_species") {
 } else if (datan == "lipid_class") {
   tmp <- data.frame(lipid = anno_class$Lipid.species_header, lipid_name = anno_class$Lipid.species)
 }
-lipids_pgs_r2_agesex_batch_diet_asd <- inner_join(tmp_all_asd_stats, tmp, by = "lipid")
+lipids_pgs_r2_agesex_batch_diet_asd <- inner_join(tmp_demog_asd_stats, tmp, by = "lipid")
 
 datatable(lipids_pgs_r2_agesex_batch_diet_asd %>% arrange(desc(lipid_PGS_EUR)) %>% mutate_if(is.numeric, ~signif(., 3)))
 
@@ -643,7 +644,7 @@ datatable(lipids_pgs_r2_agesex_batch_diet_asd %>% arrange(desc(lipid_PGS_EUR)) %
 
 ```{r}
 
-tmp_neurodev_asd_stats <- lipids_pgs.long.assoc %>% 
+tmp_neurodev_asd_stats <- lipids_pgs.long.assoc_neurodev %>% 
   filter(Pheno == "ASD") %>% 
   nest(data = -lipid) %>% 
   mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + PC1_diet_pe + PC2_diet_pe + PC3_diet_pe + ASD, data = .)), tidied = purrr::map(model, tidy)) %>%
@@ -656,7 +657,7 @@ tmp_neurodev_asd_stats <- lipids_pgs.long.assoc %>%
   mutate(Pheno = "ASD")
 colnames(tmp_neurodev_asd_stats)[which(colnames(tmp_neurodev_asd_stats) == "ASD")] <- "trait"
 
-tmp_neurodev_iqdq_stats <- lipids_pgs.long.assoc %>% 
+tmp_neurodev_iqdq_stats <- lipids_pgs.long.assoc_neurodev %>% 
   filter(Pheno == "IQ/DQ") %>% 
   nest(data = -lipid) %>% 
   mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + PC1_diet_pe + PC2_diet_pe + PC3_diet_pe + iq_dq_wisccomp_mselnv_nih, data = .)), tidied = purrr::map(model, tidy)) %>%
@@ -669,7 +670,7 @@ tmp_neurodev_iqdq_stats <- lipids_pgs.long.assoc %>%
   mutate(Pheno = "IQ/DQ")
 colnames(tmp_neurodev_iqdq_stats)[which(colnames(tmp_neurodev_iqdq_stats) == "iq_dq_wisccomp_mselnv_nih")] <- "trait"
 
-tmp_neurodev_sleep_stats <- lipids_pgs.long.assoc %>% 
+tmp_neurodev_sleep_stats <- lipids_pgs.long.assoc_neurodev %>% 
   filter(Pheno == "Sleep (CSHQ)") %>% 
   nest(data = -lipid) %>% 
   mutate(model = purrr::map(data, ~aov(pmol_mL ~ lipid_PGS_EUR + age + age2 + sex + as.factor(Batch) + InjectionOrder + PC1_diet_pe + PC2_diet_pe + PC3_diet_pe + sleep_cshq_total, data = .)), tidied = purrr::map(model, tidy)) %>%
